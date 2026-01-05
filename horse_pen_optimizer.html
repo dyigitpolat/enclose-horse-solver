@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Horse Pen Optimizer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><span class="icon">🐴</span> enclose.horse optimizer</h1>
+            <p class="subtitle">Maximum Enclosure Calculator</p>
+        </header>
+
+        <div class="app-grid">
+            <div class="panel panel-config">
+                <div class="panel-header">
+                    <h2 class="panel-title">Configuration</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="upload-zone" id="uploadZone">
+                        <div class="upload-icon">📷</div>
+                        <div class="upload-text">Drop screenshot here or click to upload</div>
+                        <img id="preview" alt="Preview">
+                    </div>
+                    <input type="file" id="fileInput" accept="image/*">
+
+                    <div id="autoDetectInfo" class="auto-detect-info" style="display: none;">
+                        Auto-detected: <strong id="detectedDims">—</strong>
+                        <div id="parseSummary" style="margin-top: 0.35rem;"></div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="wallCount">Available Walls</label>
+                        <input type="number" id="wallCount" value="20" min="1" max="500">
+                    </div>
+
+                    <button class="btn btn-primary" id="analyzeBtn" disabled>
+                        🔍 Analyze & Optimize
+                    </button>
+
+                    <div id="status" class="status"></div>
+
+                    <div class="debug-toggle" id="debugToggle">▸ Show Debug Info</div>
+                    <div class="debug-info" id="debugInfo"></div>
+                </div>
+            </div>
+
+            <div class="panel panel-solution">
+                <div class="panel-header">
+                    <h2 class="panel-title">Solution</h2>
+                </div>
+                <div class="panel-body">
+                    <div id="resultsContent" style="display: none;">
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-value" id="areaValue">0</div>
+                                <div class="stat-label">Enclosed Area</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="wallsUsed">0</div>
+                                <div class="stat-label">Walls Used</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="wallsLeft">0</div>
+                                <div class="stat-label">Walls Left</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value" id="efficiency">0</div>
+                                <div class="stat-label">Score (+3/cherry)</div>
+                            </div>
+                        </div>
+
+                        <div class="canvas-container">
+                            <canvas id="gridCanvas"></canvas>
+                            <div class="loading-overlay" id="loading">
+                                <div class="spinner"></div>
+                                <div class="loading-text">Calculating optimal enclosure...</div>
+                            </div>
+                        </div>
+
+                        <div class="legend">
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: var(--grass);"></div>
+                                <span>Grass</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: var(--water);"></div>
+                                <span>Water</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: var(--wall);"></div>
+                                <span>Place Wall</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: var(--enclosed); border: 1px solid var(--enclosed-border);"></div>
+                                <span>Enclosed</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: var(--horse);"></div>
+                                <span>Horse</span>
+                            </div>
+                        </div>
+
+                        <div class="wall-coords">
+                            <div class="wall-coords-title">Wall Placement Coordinates (x, y)</div>
+                            <div id="wallList">—</div>
+                        </div>
+                    </div>
+
+                    <div class="placeholder" id="placeholder">
+                        <div class="placeholder-icon">🗺️</div>
+                        <div class="placeholder-text">
+                            Upload a game screenshot and click "Analyze" to see the optimal wall placement
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="detectionCanvas"></canvas>
+
+    <!-- Scripts (no bundler needed; recommended to serve via http://localhost for MILP WebWorker/WASM) -->
+    <script defer src="./src/constants.js"></script>
+    <script defer src="./src/image.js"></script>
+    <script defer src="./src/render.js"></script>
+    <script defer src="./src/solver/milpSolver.js"></script>
+    <script defer src="./src/solver/solver.js"></script>
+    <script defer src="./src/main.js"></script>
+</body>
+</html>
