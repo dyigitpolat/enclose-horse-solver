@@ -7,6 +7,8 @@ Upload a game screenshot and compute an **optimal** set of wall placements to ma
 
 This project runs entirely in the browser (static HTML/CSS/JS). The optimization is solved exactly with a **MILP** in a **Web Worker** using a vendored **WASM GLPK** build.
 
+![App screenshot](./screenshot.png)
+
 ## How to run
 
 Because the app uses ES module Web Workers and WASM, you should serve it over HTTP (opening the HTML via `file://` may break in many browsers).
@@ -19,7 +21,7 @@ python3 -m http.server 8000
 
 Then open:
 
-- `http://localhost:8000/horse_pen_optimizer.html`
+- `http://localhost:8000/index.html`
 
 ## How to use
 
@@ -36,7 +38,7 @@ After walls are placed, the horse’s reachable region must **not** touch the gr
 
 ## Project structure
 
-- `horse_pen_optimizer.html`: UI shell
+- `index.html`: UI shell
 - `styles.css`: styling
 - `src/constants.js`: thresholds + scoring constants
 - `src/image.js`: grid auto-detection + tile classification (water/horse/cherries)
