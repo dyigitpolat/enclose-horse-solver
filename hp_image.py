@@ -60,12 +60,44 @@ def _score_periods(signal: np.ndarray, min_period: int, max_period: int) -> List
     if upper < int(min_period):
         return []
 
-    out: List[Tuple[int, float]] = []
+    raw: Dict[int, float] = {}
     for p in range(int(min_period), upper + 1):
         # correlation sum_{i=0}^{n-p-1} norm[i] * norm[i+p]
         s = float(np.dot(normalized[:-p], normalized[p:]))
-        out.append((p, s))
+        raw[p] = s
 
+    # Harmonic aggregation: if a fundamental period exists, its harmonics (2p, 3p, ...)
+    # often also score well. Summing harmonics helps prefer the true cell size over
+    # larger multiples that can dominate after downscaling.
+    #
+    # IMPORTANT: allow a small tolerance when matching harmonics because resampling/JPEG
+    # can shift the dominant period by ±1–2 px.
+    scores: Dict[int, float] = {}
+    max_harm = 6
+    tol = 2
+    min_p = int(min_period)
+    for p, sp in raw.items():
+        if sp <= 0:
+            scores[p] = sp
+            continue
+        agg = sp
+        for k in range(2, max_harm + 1):
+            pk = p * k
+            if pk > upper:
+                break
+            best_sk = 0.0
+            for d in range(-tol, tol + 1):
+                idx = pk + d
+                if idx < min_p or idx > upper:
+                    continue
+                v = raw.get(idx, 0.0)
+                if v > best_sk:
+                    best_sk = v
+            if best_sk > 0:
+                agg += best_sk / float(k)
+        scores[p] = agg
+
+    out = list(scores.items())
     out.sort(key=lambda t: t[1], reverse=True)
     return out
 
@@ -87,28 +119,52 @@ def _find_best_grid_from_periods(
     best_score = float("-inf")
     best_cols, best_rows = 19, 23
 
+    cover_weight = 200.0
     for cw_p, cw_score in col_top:
+        col_est = float(w) / float(cw_p) if cw_p else 0.0
+        col_cands = {
+            int(round(col_est)),
+            int(math.floor(col_est)),
+            int(math.ceil(col_est)),
+        }
         for rh_p, rh_score in row_top:
-            cols = int(round(w / cw_p))
-            rows = int(round(h / rh_p))
-            cols = max(5, min(50, cols))
-            rows = max(5, min(50, rows))
+            row_est = float(h) / float(rh_p) if rh_p else 0.0
+            row_cands = {
+                int(round(row_est)),
+                int(math.floor(row_est)),
+                int(math.ceil(row_est)),
+            }
+            for cols0 in col_cands:
+                cols = max(5, min(50, int(cols0)))
+                for rows0 in row_cands:
+                    rows = max(5, min(50, int(rows0)))
 
-            cell_w = w / cols
-            cell_h = h / rows
-            aspect = cell_w / cell_h if cell_h != 0 else 0.0
+                    cell_w = w / cols
+                    cell_h = h / rows
+                    aspect = cell_w / cell_h if cell_h != 0 else 0.0
 
-            if aspect < 0.8 or aspect > 1.25:
-                continue
+                    if aspect < 0.8 or aspect > 1.25:
+                        continue
 
-            err_w = abs(cell_w - cw_p) / float(cw_p)
-            err_h = abs(cell_h - rh_p) / float(rh_p)
-            aspect_penalty = abs(aspect - 1.0)
+                    err_w = abs(cell_w - cw_p) / float(cw_p)
+                    err_h = abs(cell_h - rh_p) / float(rh_p)
+                    aspect_penalty = abs(aspect - 1.0)
 
-            score = float(cw_score + rh_score - 1000.0 * aspect_penalty - 500.0 * (err_w + err_h))
-            if score > best_score:
-                best_score = score
-                best_cols, best_rows = cols, rows
+                    # Coverage penalty: prefer periods that tile the trimmed width/height well.
+                    # This helps avoid off-by-one cell counts after downscaling (e.g. 16 vs 17).
+                    cover_w = abs(float(w) - float(cols) * float(cw_p)) / float(cw_p)
+                    cover_h = abs(float(h) - float(rows) * float(rh_p)) / float(rh_p)
+
+                    score = float(
+                        cw_score
+                        + rh_score
+                        - 1000.0 * aspect_penalty
+                        - 500.0 * (err_w + err_h)
+                        - cover_weight * (cover_w + cover_h)
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_cols, best_rows = cols, rows
 
     return best_cols, best_rows, best_score
 
@@ -137,12 +193,36 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
     
     h_trim, w_trim = pixels_trimmed.shape[:2]
 
+    # JPEG 8x8 block artifact detector (cheap): compare gradient energy at 8px boundaries vs others.
+    gray0 = pixels_trimmed.astype(np.float32).mean(axis=2)
+    col0 = np.abs(gray0[:, 1:] - gray0[:, :-1]).sum(axis=0)  # (W-1,)
+    row0 = np.abs(gray0[1:, :] - gray0[:-1, :]).sum(axis=1)  # (H-1,)
+    if col0.size > 0:
+        idx = np.arange(col0.size, dtype=np.int32)
+        mask = ((idx + 1) % 8) == 0
+        col_ratio = float(col0[mask].mean() / (col0[~mask].mean() + 1e-6)) if np.any(mask) and np.any(~mask) else 1.0
+    else:
+        col_ratio = 1.0
+    if row0.size > 0:
+        idx = np.arange(row0.size, dtype=np.int32)
+        mask = ((idx + 1) % 8) == 0
+        row_ratio = float(row0[mask].mean() / (row0[~mask].mean() + 1e-6)) if np.any(mask) and np.any(~mask) else 1.0
+    else:
+        row_ratio = 1.0
+    blockiness = max(col_ratio, row_ratio)
+
     if use_multiscale:
         # Multi-scale detection: test with different blur levels and vote
         # Use more diverse scales to be more robust
-        scales = [0.0, 0.3, 0.7, 1.2, 1.8]  # From no blur to heavy blur
+        if blockiness > 1.6:
+            # JPEG-like inputs: heavier blur is necessary to suppress 8x8 block boundaries.
+            scales = [1.2, 1.8, 2.5, 3.5]
+            scale_weights = [1.0, 1.0, 0.9, 0.8]
+        else:
+            scales = [0.0, 0.3, 0.7, 1.2, 1.8]  # From no blur to heavy blur
+            scale_weights = [2.0, 1.5, 1.0, 0.8, 0.5]  # Prefer less blurred results
+
         scale_results = []
-        scale_weights = [2.0, 1.5, 1.0, 0.8, 0.5]  # Prefer less blurred results
         
         for blur_sigma, weight in zip(scales, scale_weights):
             if blur_sigma > 0:
@@ -155,18 +235,20 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
             # Vertical gradient profile (per-row)
             row_profile = np.abs(gray[1:, :] - gray[:-1, :]).sum(axis=1)  # (H-1,)
             
-            min_period = 10
-            max_period = 140
+            # Allow smaller cells for heavily downscaled inputs, but also avoid JPEG 8x8 blocking artifacts:
+            # derive a lower bound from the maximum plausible grid size.
+            max_grid_dim = 50
+            min_cell_from_max = int(np.floor(min(w_trim, h_trim) / float(max_grid_dim)))
+            min_period = max(4, int(np.floor(min_cell_from_max * 0.7)))
+            max_period = 200
             col_periods = _score_periods(col_profile, min_period, max_period)
             row_periods = _score_periods(row_profile, min_period, max_period)
             
             if col_periods and row_periods:
-                # Get best grid for this scale (use original dimensions for grid calculation)
+                # Get best grid for this scale on the trimmed region.
+                # Trimming removes border pixels but does NOT change the number of cells.
                 cols, rows, score = _find_best_grid_from_periods(col_periods, row_periods, w_trim, h_trim)
-                # Scale back to original dimensions
-                cols_orig = max(5, min(50, int(round(w / (w_trim / cols)))))
-                rows_orig = max(5, min(50, int(round(h / (h_trim / rows)))))
-                scale_results.append((cols_orig, rows_orig, score, blur_sigma, weight))
+                scale_results.append((cols, rows, score, blur_sigma, weight))
         
         if not scale_results:
             return 19, 23, {"fallback": True, "reason": "no_periods_multiscale"}
@@ -183,6 +265,7 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
         dbg = {
             "fallback": False,
             "multiscale": True,
+            "blockiness": blockiness,
             "scales": scales,
             "scale_results": [(c, r, s, sig, w) for c, r, s, sig, w in scale_results],
             "votes": dict(grid_votes),
@@ -200,8 +283,12 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
         # Vertical gradient profile (per-row)
         row_profile = np.abs(gray[1:, :] - gray[:-1, :]).sum(axis=1)  # (H-1,)
 
-        min_period = 10
-        max_period = 140
+        # Allow smaller cells for heavily downscaled inputs, but also avoid JPEG 8x8 blocking artifacts:
+        # derive a lower bound from the maximum plausible grid size.
+        max_grid_dim = 50
+        min_cell_from_max = int(np.floor(min(w_trim, h_trim) / float(max_grid_dim)))
+        min_period = max(4, int(np.floor(min_cell_from_max * 0.7)))
+        max_period = 200
         col_periods = _score_periods(col_profile, min_period, max_period)
         row_periods = _score_periods(row_profile, min_period, max_period)
 
@@ -210,14 +297,10 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
             return 19, 23, dbg
 
         best_cols, best_rows, best_score = _find_best_grid_from_periods(col_periods, row_periods, w_trim, h_trim)
-        
-        # Scale back to original dimensions
-        best_cols = max(5, min(50, int(round(w / (w_trim / best_cols)))))
-        best_rows = max(5, min(50, int(round(h / (h_trim / best_rows)))))
 
         if not np.isfinite(best_score):
-            cols = max(5, min(50, int(round(w / col_periods[0][0]))))
-            rows = max(5, min(50, int(round(h / row_periods[0][0]))))
+            cols = max(5, min(50, int(round(w_trim / col_periods[0][0]))))
+            rows = max(5, min(50, int(round(h_trim / row_periods[0][0]))))
             dbg = {
                 "fallback": True,
                 "reason": "cross_scoring_failed",
@@ -234,8 +317,8 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray, use_multiscale: b
             "cols": best_cols,
             "rows": best_rows,
             "best_score": best_score,
-            "best_col_period": w / best_cols if best_cols > 0 else None,
-            "best_row_period": h / best_rows if best_rows > 0 else None,
+            "best_col_period": w_trim / best_cols if best_cols > 0 else None,
+            "best_row_period": h_trim / best_rows if best_rows > 0 else None,
         }
         return best_cols, best_rows, dbg
 
@@ -264,7 +347,7 @@ def _fit_grid_axis(profile: np.ndarray, n_cells: int, target_cell: float) -> Tup
 
     # Search period in a range around the naive estimate.
     target = float(target_cell)
-    p_min = max(10, int(math.floor(target * 0.7)))
+    p_min = max(4, int(math.floor(target * 0.7)))
     p_max = min(200, int(math.ceil(target * 1.3)))
 
     best_score = float("-inf")
@@ -432,7 +515,8 @@ def _detect_cherry_cells_by_pixels(
     h, w = pixels_rgb.shape[:2]
     counts = np.zeros((rows, cols), dtype=np.uint16)
 
-    step = 2
+    # For very small images (downscaled), scan every pixel to avoid missing cherries.
+    step = 1 if min(cell_w, cell_h) < 20 else 2
     sub = pixels_rgb[::step, ::step, :]  # (H/2, W/2, 3)
     r = sub[:, :, 0].astype(np.int16)
     g = sub[:, :, 1].astype(np.int16)
@@ -710,16 +794,26 @@ def parse_image_to_grid(
     else:
         pixels = pixels_original
 
-    # Use 25 sample points for maximum robustness (5x5 grid)
-    # This helps handle small pixel shifts from crop/extend operations
-    sample_points = []
-    for fy in [0.2, 0.35, 0.5, 0.65, 0.8]:
-        for fx in [0.2, 0.35, 0.5, 0.65, 0.8]:
+    # Use 25 sample points for maximum robustness (5x5 grid).
+    # For very small cell sizes (after downscaling), avoid sampling too close to edges
+    # where interpolation/JPEG ringing blends colors across tiles.
+    min_cell_px = float(min(cell_w, cell_h))
+    coords = [0.3, 0.4, 0.5, 0.6, 0.7] if min_cell_px < 35.0 else [0.2, 0.35, 0.5, 0.65, 0.8]
+    sample_points: List[Tuple[float, float]] = []
+    for fy in coords:
+        for fx in coords:
             sample_points.append((fx, fy))
     
     # Analyze color clusters adaptively
     cluster_info = _analyze_color_clusters(pixels, x0, y0, cell_w, cell_h, rows, cols, sample_points)
     water_thresh = cluster_info["water_threshold"]
+
+    # JPEG/downscale robustness: when the image has strong 8x8 block artifacts and cells are small,
+    # water edges can get slightly darkened and lose a couple of water votes. A tiny slack on b_min
+    # fixes rare 1-cell flips (e.g. p4_scale_0.5_jpg_q20) while keeping non-JPEG inputs unchanged.
+    blockiness = float(auto_dbg.get("blockiness", 1.0) or 1.0)
+    if blockiness > 1.6 and min_cell_px < 35.0:
+        water_thresh["b_min"] = float(max(30.0, float(water_thresh["b_min"]) - 2.0))
 
     grid: List[List[str]] = [["grass"] * cols for _ in range(rows)]
     water_count = 0

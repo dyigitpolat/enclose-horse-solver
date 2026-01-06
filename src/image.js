@@ -157,6 +157,54 @@
     }
   }
 
+  // JPEG 8x8 block artifact detector (cheap): compare gradient energy at 8px boundaries vs others.
+  function estimateJpegBlockiness(pixels, width, height) {
+    if (width <= 2 || height <= 2) return 1.0;
+
+    // Grayscale + gradient profiles (full image; small overhead compared to parsing)
+    const gray = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const idx = i * 4;
+      gray[i] = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+    }
+
+    const colProfile = new Float32Array(width - 1);
+    for (let x = 0; x < width - 1; x++) {
+      let sum = 0;
+      for (let y = 0; y < height; y++) {
+        sum += Math.abs(gray[y * width + x + 1] - gray[y * width + x]);
+      }
+      colProfile[x] = sum;
+    }
+
+    const rowProfile = new Float32Array(height - 1);
+    for (let y = 0; y < height - 1; y++) {
+      let sum = 0;
+      for (let x = 0; x < width; x++) {
+        sum += Math.abs(gray[(y + 1) * width + x] - gray[y * width + x]);
+      }
+      rowProfile[y] = sum;
+    }
+
+    function boundaryRatio(profile) {
+      const n = profile.length;
+      if (n <= 0) return 1.0;
+      let sumB = 0, cntB = 0, sumO = 0, cntO = 0;
+      for (let i = 0; i < n; i++) {
+        const v = profile[i];
+        if (((i + 1) % 8) === 0) {
+          sumB += v; cntB++;
+        } else {
+          sumO += v; cntO++;
+        }
+      }
+      if (cntB === 0 || cntO === 0) return 1.0;
+      return (sumB / cntB) / ((sumO / cntO) + 1e-6);
+    }
+
+    return Math.max(boundaryRatio(colProfile), boundaryRatio(rowProfile));
+  }
+
   HP.detectGridDimensionsFromPixels = function detectGridDimensionsFromPixels(pixels, width, height, useMultiscale = true, trimEdges = 8) {
     // Trim edges to reduce border artifacts
     const trim = Math.min(trimEdges, Math.floor(Math.min(width, height) / 4));
@@ -167,8 +215,73 @@
 
     if (useMultiscale) {
       // Multi-scale detection with weighted voting
-      const scales = [0.0, 0.3, 0.7, 1.2, 1.8];
-      const weights = [2.0, 1.5, 1.0, 0.8, 0.5];
+      // JPEG 8x8 block artifact detector (cheap): compare gradient energy at 8px boundaries vs others.
+      function estimateBlockiness() {
+        const widthTrim = width - trimLeft - trimRight;
+        const heightTrim = height - trimTop - trimBottom;
+        if (widthTrim <= 2 || heightTrim <= 2) return 1.0;
+
+        // grayscale for trimmed region
+        const gray = new Float32Array(widthTrim * heightTrim);
+        for (let y = 0; y < heightTrim; y++) {
+          for (let x = 0; x < widthTrim; x++) {
+            const srcIdx = ((y + trimTop) * width + (x + trimLeft)) * 4;
+            gray[y * widthTrim + x] = (pixels[srcIdx] + pixels[srcIdx + 1] + pixels[srcIdx + 2]) / 3;
+          }
+        }
+
+        const colProfile = new Float32Array(widthTrim - 1);
+        for (let x = 0; x < widthTrim - 1; x++) {
+          let sum = 0;
+          for (let y = 0; y < heightTrim; y++) {
+            sum += Math.abs(gray[y * widthTrim + x + 1] - gray[y * widthTrim + x]);
+          }
+          colProfile[x] = sum;
+        }
+        const rowProfile = new Float32Array(heightTrim - 1);
+        for (let y = 0; y < heightTrim - 1; y++) {
+          let sum = 0;
+          for (let x = 0; x < widthTrim; x++) {
+            sum += Math.abs(gray[(y + 1) * widthTrim + x] - gray[y * widthTrim + x]);
+          }
+          rowProfile[y] = sum;
+        }
+
+        function boundaryRatio(profile) {
+          const n = profile.length;
+          if (n <= 0) return 1.0;
+          let sumB = 0, cntB = 0, sumO = 0, cntO = 0;
+          for (let i = 0; i < n; i++) {
+            const v = profile[i];
+            if (((i + 1) % 8) === 0) {
+              sumB += v; cntB++;
+            } else {
+              sumO += v; cntO++;
+            }
+          }
+          if (cntB === 0 || cntO === 0) return 1.0;
+          const mB = sumB / cntB;
+          const mO = sumO / cntO;
+          return mB / (mO + 1e-6);
+        }
+
+        const rC = boundaryRatio(colProfile);
+        const rR = boundaryRatio(rowProfile);
+        return Math.max(rC, rR);
+      }
+
+      const blockiness = estimateBlockiness();
+
+      let scales;
+      let weights;
+      if (blockiness > 1.6) {
+        // JPEG-like inputs: heavier blur is necessary to suppress 8x8 block boundaries.
+        scales = [1.2, 1.8, 2.5, 3.5];
+        weights = [1.0, 1.0, 0.9, 0.8];
+      } else {
+        scales = [0.0, 0.3, 0.7, 1.2, 1.8];
+        weights = [2.0, 1.5, 1.0, 0.8, 0.5];
+      }
       const scaleResults = [];
 
       for (let i = 0; i < scales.length; i++) {
@@ -290,19 +403,59 @@
       for (let i = 0; i < n; i++) normalized[i] = (signal[i] - mean) / std;
 
       const upper = Math.min(maxPeriod, Math.floor(n / 3));
-      const out = [];
+
+      // Compute raw autocorr scores.
+      const raw = new Float32Array(upper + 1);
       for (let period = minPeriod; period <= upper; period++) {
         let score = 0;
         for (let i = 0; i < n - period; i++) score += normalized[i] * normalized[i + period];
-        out.push({ period, score });
+        raw[period] = score;
       }
+
+      // Harmonic aggregation: if a fundamental period exists, its harmonics (2p, 3p, ...)
+      // often also score well. Summing harmonics helps prefer the true cell size over
+      // larger multiples that can dominate after downscaling.
+      //
+      // IMPORTANT: allow a small tolerance when matching harmonics because resampling/JPEG
+      // can shift the dominant period by ±1–2 px.
+      const scores = new Float32Array(upper + 1);
+      const maxHarm = 6;
+      const tol = 2;
+      for (let period = minPeriod; period <= upper; period++) {
+        const sp = raw[period];
+        if (sp <= 0) {
+          scores[period] = sp;
+          continue;
+        }
+        let agg = sp;
+        for (let k = 2; k <= maxHarm; k++) {
+          const pk = period * k;
+          if (pk > upper) break;
+          let bestSk = 0;
+          for (let d = -tol; d <= tol; d++) {
+            const idx = pk + d;
+            if (idx < minPeriod || idx > upper) continue;
+            const sk = raw[idx];
+            if (sk > bestSk) bestSk = sk;
+          }
+          if (bestSk > 0) agg += bestSk / k;
+        }
+        scores[period] = agg;
+      }
+
+      const out = [];
+      for (let period = minPeriod; period <= upper; period++) out.push({ period, score: scores[period] });
       out.sort((a, b) => b.score - a.score);
       return out;
     }
 
     // Search a wider range than before; still fast for these image sizes.
-    const minPeriod = 10;
-    const maxPeriod = 140;
+    // Allow smaller cells for heavily downscaled inputs, but also avoid JPEG 8x8 blocking artifacts:
+    // derive a lower bound from the maximum plausible grid size.
+    const maxGridDim = 35; // must match the clamp below
+    const minCellFromMaxGrid = Math.floor(Math.min(widthTrim, heightTrim) / maxGridDim);
+    const minPeriod = Math.max(4, Math.floor(minCellFromMaxGrid * 0.7));
+    const maxPeriod = 200;
 
     const colPeriods = scorePeriods(colProfile, minPeriod, maxPeriod);
     const rowPeriods = scorePeriods(rowProfile, minPeriod, maxPeriod);
@@ -317,31 +470,41 @@
     const rowTop = rowPeriods.slice(0, topK);
 
     let best = { score: -Infinity, cols: 19, rows: 23 };
+    const coverWeight = 200;
 
     for (const cw of colTop) {
+      const colEst = widthTrim / cw.period;
+      const colCands = new Set([Math.round(colEst), Math.floor(colEst), Math.ceil(colEst)]);
       for (const rh of rowTop) {
-        let cols = Math.round(widthTrim / cw.period);
-        let rows = Math.round(heightTrim / rh.period);
+        const rowEst = heightTrim / rh.period;
+        const rowCands = new Set([Math.round(rowEst), Math.floor(rowEst), Math.ceil(rowEst)]);
 
-        // Allow up to 35x35 for detection (proper clamping happens later)
-        cols = Math.max(5, Math.min(35, cols));
-        rows = Math.max(5, Math.min(35, rows));
+        for (const cols0 of colCands) {
+          const cols = Math.max(5, Math.min(35, cols0));
+          for (const rows0 of rowCands) {
+            const rows = Math.max(5, Math.min(35, rows0));
 
-        const cellW2 = widthTrim / cols;
-        const cellH2 = heightTrim / rows;
-        const aspect = cellW2 / cellH2;
+            const cellW2 = widthTrim / cols;
+            const cellH2 = heightTrim / rows;
+            const aspect = cellW2 / cellH2;
 
-        // Prefer near-square cells; reject extremely skewed.
-        if (aspect < 0.8 || aspect > 1.25) continue;
+            // Prefer near-square cells; reject extremely skewed.
+            if (aspect < 0.8 || aspect > 1.25) continue;
 
-        const errW = Math.abs(cellW2 - cw.period) / cw.period;
-        const errH = Math.abs(cellH2 - rh.period) / rh.period;
-        const aspectPenalty = Math.abs(aspect - 1);
+            const errW = Math.abs(cellW2 - cw.period) / cw.period;
+            const errH = Math.abs(cellH2 - rh.period) / rh.period;
+            const aspectPenalty = Math.abs(aspect - 1);
 
-        const score = cw.score + rh.score - 1000 * aspectPenalty - 500 * (errW + errH);
+            // Coverage penalty: prefer periods that tile the trimmed width/height well.
+            // This helps avoid off-by-one cell counts after downscaling (e.g. 16 vs 17).
+            const coverW = Math.abs(widthTrim - cols * cw.period) / cw.period;
+            const coverH = Math.abs(heightTrim - rows * rh.period) / rh.period;
+            const score = cw.score + rh.score - 1000 * aspectPenalty - 500 * (errW + errH) - coverWeight * (coverW + coverH);
 
-        if (score > best.score) {
-          best = { score, cols, rows };
+            if (score > best.score) {
+              best = { score, cols, rows };
+            }
+          }
         }
       }
     }
@@ -350,22 +513,12 @@
     if (!Number.isFinite(best.score)) {
       const cols = Math.max(5, Math.min(35, Math.round(widthTrim / colPeriods[0].period)));
       const rows = Math.max(5, Math.min(35, Math.round(heightTrim / rowPeriods[0].period)));
-      
-      // Scale back to original dimensions
-      const cellWTrim = widthTrim / cols;
-      const cellHTrim = heightTrim / rows;
-      const colsOrig = Math.max(5, Math.min(35, Math.round(width / cellWTrim)));
-      const rowsOrig = Math.max(5, Math.min(35, Math.round(height / cellHTrim)));
-      return { cols: colsOrig, rows: rowsOrig, score: -Infinity };
+      // Trimming removes border pixels but does NOT change the number of cells.
+      return { cols, rows, score: -Infinity };
     }
 
-    // Scale back to original dimensions
-    const cellWTrim = widthTrim / best.cols;
-    const cellHTrim = heightTrim / best.rows;
-    const colsOrig = Math.max(5, Math.min(35, Math.round(width / cellWTrim)));
-    const rowsOrig = Math.max(5, Math.min(35, Math.round(height / cellHTrim)));
-    
-    return { cols: colsOrig, rows: rowsOrig, score: best.score };
+    // Trimming removes border pixels but does NOT change the number of cells.
+    return { cols: best.cols, rows: best.rows, score: best.score };
   }
 
   function smooth1d(x, windowSize = 3) {
@@ -404,7 +557,7 @@
     const profS = smooth1d(prof, 3);
     const n = profS.length;
     const target = targetCell;
-    const pMin = Math.max(10, Math.floor(target * 0.7));
+    const pMin = Math.max(4, Math.floor(target * 0.7));
     const pMax = Math.min(200, Math.ceil(target * 1.3));
 
     if (n <= 0) {
@@ -581,11 +734,15 @@
       pixels = applyGaussianBlur(pixelsOriginal, width, height, blurRadius);
     }
 
-    // Use 25 sample points for maximum robustness (5x5 grid)
-    // This helps handle small pixel shifts from crop/extend operations
+    // Use 25 sample points for maximum robustness (5x5 grid).
+    // For very small cell sizes (after downscaling), avoid sampling too close to edges
+    // where interpolation/JPEG ringing blends colors across tiles.
+    const minCellPx = Math.min(cellW, cellH);
+    const coords = minCellPx < 35 ? [0.3, 0.4, 0.5, 0.6, 0.7] : [0.2, 0.35, 0.5, 0.65, 0.8];
+
     const samplePoints = [];
-    for (const fy of [0.2, 0.35, 0.5, 0.65, 0.8]) {
-      for (const fx of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+    for (const fy of coords) {
+      for (const fx of coords) {
         samplePoints.push([fx, fy]);
       }
     }
@@ -593,7 +750,25 @@
     // Analyze color clusters adaptively
     const colorClusters = analyzeColorClusters(pixels, width, height, x0, y0, cellW, cellH, rows, cols, samplePoints);
     const waterThresh = colorClusters.waterThreshold;
-    console.log(`[JS] Grid ${cols}x${rows}, geom:`, { x0, y0, cellW, cellH }, 'Color clusters:', colorClusters.method, 'Water thresh:', waterThresh);
+
+    // JPEG/downscale robustness: when strong 8x8 block artifacts exist and cells are small,
+    // water edges can get slightly darkened and lose a couple of water votes. A tiny slack on bMin
+    // fixes rare 1-cell flips (e.g. p4_scale_0.5_jpg_q20) while keeping non-JPEG inputs unchanged.
+    const blockiness = estimateJpegBlockiness(pixelsOriginal, width, height);
+    if (blockiness > 1.6 && minCellPx < 35) {
+      waterThresh.bMin = Math.max(30, waterThresh.bMin - 2);
+    }
+
+    console.log(
+      `[JS] Grid ${cols}x${rows}, geom:`,
+      { x0, y0, cellW, cellH },
+      'Color clusters:',
+      colorClusters.method,
+      'Water thresh:',
+      waterThresh,
+      'blockiness:',
+      blockiness.toFixed(3)
+    );
 
     const grid = [];
     let horsePos = null;
@@ -807,7 +982,8 @@
 
   function detectCherryCellsByPixels(pixels, width, height, geom, rows, cols, grid) {
     const counts = new Uint16Array(rows * cols);
-    const step = 2; // fast enough and reliable for pixel-art sprites
+    // For very small images (downscaled), scan every pixel to avoid missing cherries.
+    const step = Math.min(geom.cellW, geom.cellH) < 20 ? 1 : 2;
 
     const gridLeft = geom.x0;
     const gridTop = geom.y0;

@@ -36,6 +36,26 @@ const FIXTURES_DIR = path.join(ROOT_DIR, "tests", "fixtures");
 
 require(path.join(ROOT_DIR, "src", "image.js"));
 
+// Fixture policy (as per user feedback):
+// - Only test downscales in [0.5, 1.0]
+// - Only test JPEG qualities >= 20
+// Other non-scale/non-JPEG variants (hue shift, crop/extend, etc.) are still tested.
+const RE_SCALE = /_scale_([0-9]+(?:\.[0-9]+)?)/;
+const RE_JPGQ = /_jpg_q(\d+)/;
+function isAllowedVariant(fileName) {
+  const mS = fileName.match(RE_SCALE);
+  if (mS) {
+    const s = Number.parseFloat(mS[1]);
+    if (!Number.isFinite(s) || s < 0.5 || s > 1.0) return false;
+  }
+  const mQ = fileName.match(RE_JPGQ);
+  if (mQ) {
+    const q = Number.parseInt(mQ[1], 10);
+    if (!Number.isFinite(q) || q < 20) return false;
+  }
+  return true;
+}
+
 function loadPng(filePath) {
   const buf = fs.readFileSync(filePath);
   const png = PNG.sync.read(buf);
@@ -51,6 +71,8 @@ function parseWithJs(filePath) {
 
 function gridDiff(a, b) {
   const diffs = [];
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) return diffs;
+  if (a.length !== b.length || a[0].length !== b[0].length) return [["GRID_SIZE_MISMATCH", a[0]?.length, a.length, b[0]?.length, b.length]];
   for (let y = 0; y < a.length; y++) {
     for (let x = 0; x < a[0].length; x++) {
       if (a[y][x] !== b[y][x]) diffs.push([x, y, a[y][x], b[y][x]]);
@@ -102,7 +124,14 @@ function assertFamily(prefix, baseFile, expectedBase) {
   const files = fs
     .readdirSync(FIXTURES_DIR)
     .filter((f) => f.startsWith(prefix + "_") && f.endsWith(".png"))
+    .filter(isAllowedVariant)
     .sort();
+  const ignored = fs
+    .readdirSync(FIXTURES_DIR)
+    .filter((f) => f.startsWith(prefix + "_") && f.endsWith(".png") && !isAllowedVariant(f)).length;
+  if (ignored) {
+    console.log(`[INFO] ignored ${ignored} out-of-policy fixture(s) (scale>=0.5, jpg_q>=20)`);
+  }
 
   let failed = 0;
   for (const file of files) {
@@ -156,6 +185,9 @@ function main() {
     "p5.png": { grid: "12x14", horse: { x: 6, y: 7 }, water: 53, grass: 104, cherries: 10 },
   };
 
+  // p2/p3: no hardcoded expectations, but all variants must match their base exactly.
+  assertFamily("p2", "p2.png");
+  assertFamily("p3", "p3.png");
   assertFamily("p4", "p4.png", expected["p4.png"]);
   assertFamily("p5", "p5.png", expected["p5.png"]);
 

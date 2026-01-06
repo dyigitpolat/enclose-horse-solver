@@ -230,20 +230,30 @@ async function solveMILP(payload) {
 
   const res = glp.solve(model, opts);
   const status = res?.result?.status ?? glp.GLP_UNDEF;
+  const vars = res?.result?.vars || {};
+
   const isOptimal = status === glp.GLP_OPT;
-  const isFeasible = status === glp.GLP_FEAS || isOptimal;
-  if (!isFeasible) {
+  const isFeasibleStatus = status === glp.GLP_FEAS || isOptimal;
+
+  // In glpk.js, when the MIP solve hits the time limit it can still return an incumbent
+  // solution but report status=GLP_UNDEF. In that case, we should accept the incumbent.
+  //
+  // Heuristic: accept only if the incumbent satisfies the fixed horse vars (r_horse=1, w_horse=0),
+  // which rules out the "all zeros / no incumbent" default-var edge case.
+  const rHorse = vars["r_" + horseId];
+  const wHorse = vars["w_" + horseId];
+  const hasIncumbent = Number.isFinite(rHorse) && rHorse > 0.5 && Number.isFinite(wHorse) && wHorse < 0.5;
+
+  if (!isFeasibleStatus && !hasIncumbent) {
     throw new Error("GLPK returned status " + status);
   }
-
-  const vars = res.result.vars || {};
   const walls = [];
   for (let i = 0; i < n; i++) {
     const val = vars["w_" + i] || 0;
     if (val > 0.5) walls.push({ x: coordX[i], y: coordY[i] });
   }
 
-  return { walls, ms: Date.now() - t0, status, isOptimal };
+  return { walls, ms: Date.now() - t0, status, isOptimal, hasIncumbent };
 }
 
 self.onmessage = (ev) => {
