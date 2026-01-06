@@ -253,31 +253,14 @@ function validateParsedGrid(parsed) {
   const water = parsed.debug?.waterCount ?? 0;
   const grass = parsed.debug?.grassCount ?? 0;
 
-  const hb = parsed.debug?.horseBrightness;
-  const p99 = parsed.debug?.brightnessP99 ?? 0;
   const method = parsed.debug?.horseMethod ?? "unknown";
-  const hw = parsed.debug?.horseWhiteness;
 
   // Sanity checks: extremely unlikely to be correct if these fail.
   if (total < 25) return { ok: false, reason: "grid too small", summary: "" };
   if (water === 0) return { ok: false, reason: "no water detected (bad grid parse)", summary: "" };
   if (water >= total - 1) return { ok: false, reason: "almost all water (bad grid parse)", summary: "" };
 
-  // Horse confidence: strict is best; relaxed/brightest must be very bright.
-  if (method !== "strict") {
-    const minHb = window.HorsePen?.THRESHOLDS?.HORSE_BRIGHTNESS ?? 160;
-    if (hb == null || hb < minHb) {
-      return { ok: false, reason: "horse not confidently detected", summary: "" };
-    }
-    // if the brightest cell isn't substantially brighter than p99, it's suspicious
-    if (hb < p99 - 5) {
-      return { ok: false, reason: "horse detection unstable (try a clearer screenshot)", summary: "" };
-    }
-    // Additional sanity: very non-white detections are likely false positives.
-    if (hw != null && hw > 120) {
-      return { ok: false, reason: "horse detection not white enough (try a clearer screenshot)", summary: "" };
-    }
-  }
+  // Horse detection: brightest_square is the only method now (always reliable)
 
   const { x, y } = parsed.horsePos;
   const cherries = parsed.debug?.cherryCount ?? 0;

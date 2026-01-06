@@ -146,12 +146,7 @@
   let grassCount = 0;
   let cherryCount = 0;
 
-  // Track best horse candidates for fallback
-  let bestStrict = null; // { x,y, brightness, whiteness }
-  let bestRelaxed = null;
-  let bestBright = null; // brightest non-water cell by average brightness
-  const brightnessSamples = [];
-  const cherryCandidates = new Uint8Array(cols * rows); // 1 if any sampled pixel looked like a cherry
+  const cherryCandidates = new Uint8Array(cols * rows);
 
   for (let row = 0; row < rows; row++) {
     grid[row] = [];
@@ -180,6 +175,7 @@
 
       if (samples.length === 0) {
         grid[row][col] = "grass";
+        grassCount++;
         continue;
       }
 
@@ -189,30 +185,11 @@
         b: samples.reduce((s, c) => s + c.b, 0) / samples.length,
       };
 
-      const avgBrightness = (avg.r + avg.g + avg.b) / 3;
-      const avgRg = Math.abs(avg.r - avg.g);
-      const avgGb = Math.abs(avg.g - avg.b);
-      const avgWhiteness = avgRg + avgGb; // smaller = more white/gray
-      brightnessSamples.push(avgBrightness);
-
-      // Detect horse using max brightness among sample points (more reliable for small sprites).
-      let strictSample = null; // { brightness, whiteness }
-      let relaxedSample = null;
       let cherrySampleHit = false;
       for (const s of samples) {
-        if (!cherrySampleHit && isCherryPixel(s.r, s.g, s.b)) cherrySampleHit = true;
-
-        const b = (s.r + s.g + s.b) / 3;
-        const rg = Math.abs(s.r - s.g);
-        const gb = Math.abs(s.g - s.b);
-        const white = rg + gb;
-        const isWhitishStrict = rg < 30 && gb < 30;
-        const isWhitishRelaxed = rg < 45 && gb < 45;
-        if (b > THRESHOLDS.HORSE_BRIGHTNESS && isWhitishStrict) {
-          if (!strictSample || b > strictSample.brightness) strictSample = { brightness: b, whiteness: white };
-        }
-        if (b > THRESHOLDS.HORSE_BRIGHTNESS - 15 && isWhitishRelaxed) {
-          if (!relaxedSample || b > relaxedSample.brightness) relaxedSample = { brightness: b, whiteness: white };
+        if (isCherryPixel(s.r, s.g, s.b)) {
+          cherrySampleHit = true;
+          break;
         }
       }
 
@@ -229,53 +206,17 @@
       } else {
         grid[row][col] = "grass";
         grassCount++;
-
-        // Track brightest non-water cell for last-ditch fallback
-        if (!bestBright || avgBrightness > bestBright.brightness) {
-          bestBright = { x: col, y: row, brightness: avgBrightness, whiteness: avgWhiteness };
-        }
       }
 
       if (!isWater && cherrySampleHit) {
         cherryCandidates[row * cols + col] = 1;
       }
-
-      if (strictSample) {
-        if (!bestStrict || strictSample.brightness > bestStrict.brightness) {
-          bestStrict = { x: col, y: row, brightness: strictSample.brightness, whiteness: strictSample.whiteness };
-        }
-      } else if (relaxedSample) {
-        if (!bestRelaxed || relaxedSample.brightness > bestRelaxed.brightness) {
-          bestRelaxed = {
-            x: col,
-            y: row,
-            brightness: relaxedSample.brightness,
-            whiteness: relaxedSample.whiteness,
-          };
-        }
-      }
     }
   }
 
-  // Finalize horse position with fallback strategy
-  let horseMethod = "strict";
-  let horseStats = bestStrict;
-  if (!horseStats && bestRelaxed) {
-    horseMethod = "relaxed";
-    horseStats = bestRelaxed;
-  }
-  if (!horseStats) {
-    // Pixel-level fallback: find the brightest white-ish pixel and map to a grid cell.
-    const bestPixel = findHorseByBrightPixel(pixels, canvas.width, canvas.height, cellW, cellH, rows, cols, grid);
-    if (bestPixel) {
-      horseMethod = "pixel";
-      horseStats = bestPixel;
-    }
-  }
-  if (!horseStats && bestBright) {
-    horseMethod = "brightest";
-    horseStats = bestBright;
-  }
+  // Find horse using brightest square algorithm (most reliable)
+  let horseMethod = "brightest_square";
+  let horseStats = findHorseByBrightestSquare(pixels, canvas.width, canvas.height, cellW, cellH, rows, cols);
 
   if (horseStats) {
     horsePos = { x: horseStats.x, y: horseStats.y };
@@ -310,11 +251,6 @@
     }
   }
 
-  // Compute simple confidence stats (used by UI validation)
-  brightnessSamples.sort((a, b) => a - b);
-  const p90 = brightnessSamples[Math.floor(brightnessSamples.length * 0.9)] ?? 0;
-  const p99 = brightnessSamples[Math.floor(brightnessSamples.length * 0.99)] ?? 0;
-
   const debug = {
     waterCount,
     grassCount,
@@ -322,8 +258,6 @@
     horseMethod,
     horseBrightness: horseStats?.brightness ?? null,
     horseWhiteness: horseStats?.whiteness ?? null,
-    brightnessP90: p90,
-    brightnessP99: p99,
     cherryCount,
     cherryCells,
   };
@@ -331,46 +265,66 @@
   return { grid, width: cols, height: rows, horsePos, debug };
   };
 
-  function findHorseByBrightPixel(pixels, width, height, cellW, cellH, rows, cols, grid) {
-    // Two-pass scan: prefer non-water cells first, then allow any cell if needed.
-    const passes = [true, false];
-    const steps = [2, 1]; // fast pass then full scan if needed
-
-    for (const preferNonWater of passes) {
-      for (const step of steps) {
-        let best = null; // { x,y, brightness, whiteness }
-        for (let y = 0; y < height; y += step) {
-          for (let x = 0; x < width; x += step) {
-            const idx = (y * width + x) * 4;
-            const r = pixels[idx];
-            const g = pixels[idx + 1];
-            const b = pixels[idx + 2];
-
-            const brightness = (r + g + b) / 3;
-            if (brightness < THRESHOLDS.HORSE_BRIGHTNESS) continue;
-
-            const rg = Math.abs(r - g);
-            const gb = Math.abs(g - b);
-            const whiteness = rg + gb;
-
-            // White-ish; avoid strongly blue water highlights.
-            if (rg > 50 || gb > 50) continue;
-            if (b > r + 40 && b > g + 20) continue;
-
-            const col = Math.min(cols - 1, Math.max(0, Math.floor(x / cellW)));
-            const row = Math.min(rows - 1, Math.max(0, Math.floor(y / cellH)));
-
-            if (preferNonWater && grid[row]?.[col] === "water") continue;
-
-            if (!best || brightness > best.brightness) {
-              best = { x: col, y: row, brightness, whiteness };
+  function findHorseByBrightestSquare(pixels, width, height, cellW, cellH, rows, cols) {
+    // Find the cellSize×cellSize square region with highest mean brightness.
+    // The horse sprite is white, so its cell will have the highest mean brightness.
+    const cellSize = Math.round((cellW + cellH) / 2);
+    
+    // Compute grayscale brightness for the entire image
+    const gray = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+      const idx = i * 4;
+      gray[i] = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+    }
+    
+    // Sliding window to find the square with highest mean brightness
+    // Step by 1/4 cell to ensure we don't miss the horse
+    const step = Math.max(1, Math.floor(cellSize / 4));
+    let bestBrightness = 0;
+    let bestX = 0;
+    let bestY = 0;
+    
+    for (let y = 0; y <= height - cellSize; y += step) {
+      for (let x = 0; x <= width - cellSize; x += step) {
+        // Compute mean brightness of this square
+        let sum = 0;
+        let count = 0;
+        for (let dy = 0; dy < cellSize; dy++) {
+          for (let dx = 0; dx < cellSize; dx++) {
+            const px = x + dx;
+            const py = y + dy;
+            if (py < height && px < width) {
+              sum += gray[py * width + px];
+              count++;
             }
           }
         }
-        if (best) return best;
+        const meanBrightness = count > 0 ? sum / count : 0;
+        if (meanBrightness > bestBrightness) {
+          bestBrightness = meanBrightness;
+          bestX = x;
+          bestY = y;
+        }
       }
     }
-    return null;
+    
+    if (bestBrightness < 50) return null; // Sanity check
+    
+    // Map center of square to grid coordinates
+    const centerX = bestX + Math.floor(cellSize / 2);
+    const centerY = bestY + Math.floor(cellSize / 2);
+    
+    const col = Math.min(cols - 1, Math.max(0, Math.floor(centerX / cellW)));
+    const row = Math.min(rows - 1, Math.max(0, Math.floor(centerY / cellH)));
+    
+    // Compute whiteness at center
+    const idx = (centerY * width + centerX) * 4;
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+    const whiteness = Math.abs(r - g) + Math.abs(g - b);
+    
+    return { x: col, y: row, brightness: bestBrightness, whiteness };
   }
 
   function isCherryPixel(r, g, b) {

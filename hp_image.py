@@ -148,6 +148,8 @@ def detect_grid_dimensions_from_pixels(pixels_rgb: np.ndarray) -> Tuple[int, int
 
 def _is_cherry_pixel(r: int, g: int, b: int) -> bool:
     # Mirrors `isCherryPixel` in JS.
+    # Cast to int to avoid uint8 overflow in comparisons
+    r, g, b = int(r), int(g), int(b)
     return r >= 150 and (r - g) >= 60 and (r - b) >= 60 and g <= 170 and b <= 170
 
 
@@ -206,84 +208,64 @@ def _detect_cherry_cells_by_pixels(
     return out.reshape(-1)
 
 
-def _find_horse_by_bright_pixel(
+def _find_horse_by_brightest_square(
     pixels_rgb: np.ndarray,
     cell_w: float,
     cell_h: float,
     rows: int,
     cols: int,
-    grid: List[List[str]],
 ) -> Optional[Dict[str, float]]:
     """
-    Mirrors `findHorseByBrightPixel` in JS, but vectorized with numpy.
-    Returns dict {x,y,brightness,whiteness} in grid coords, or None.
+    Find the N×N square region with highest MEAN brightness (where N ≈ cell size).
+    The horse sprite is white, so its cell will have the highest mean brightness.
+    Returns dict {x,y,brightness,whiteness} in grid coords.
     """
     h, w = pixels_rgb.shape[:2]
-
-    def try_pass(prefer_non_water: bool, step: int) -> Optional[Dict[str, float]]:
-        sub = pixels_rgb[::step, ::step, :]
-        rr = sub[:, :, 0].astype(np.int16)
-        gg = sub[:, :, 1].astype(np.int16)
-        bb = sub[:, :, 2].astype(np.int16)
-
-        brightness = (rr + gg + bb).astype(np.float32) / 3.0
-        rg = np.abs(rr - gg).astype(np.int16)
-        gb = np.abs(gg - bb).astype(np.int16)
-        whiteness = (rg + gb).astype(np.float32)
-
-        # JS filters
-        mask = brightness >= HORSE_BRIGHTNESS
-        mask &= rg <= 50
-        mask &= gb <= 50
-        mask &= ~((bb > rr + 40) & (bb > gg + 20))  # avoid blue water highlights
-
-        if not mask.any():
-            return None
-
-        ys, xs = np.nonzero(mask)
-        # choose max brightness among candidates
-        cand_b = brightness[ys, xs]
-        idx = int(np.argmax(cand_b))
-        py = int(ys[idx] * step)
-        px = int(xs[idx] * step)
-
-        col = int(np.floor(px / cell_w))
-        row = int(np.floor(py / cell_h))
-        col = max(0, min(cols - 1, col))
-        row = max(0, min(rows - 1, row))
-
-        if prefer_non_water and grid[row][col] == "water":
-            # Need the best non-water candidate; filter by cell.
-            cols_idx = np.floor((xs.astype(np.float32) * step) / cell_w).astype(np.int32)
-            rows_idx = np.floor((ys.astype(np.float32) * step) / cell_h).astype(np.int32)
-            cols_idx = np.clip(cols_idx, 0, cols - 1)
-            rows_idx = np.clip(rows_idx, 0, rows - 1)
-            keep = np.array([grid[int(ry)][int(cx)] != "water" for ry, cx in zip(rows_idx, cols_idx)], dtype=bool)
-            if not keep.any():
-                return None
-            ys2 = ys[keep]
-            xs2 = xs[keep]
-            cand_b2 = brightness[ys2, xs2]
-            idx2 = int(np.argmax(cand_b2))
-            py = int(ys2[idx2] * step)
-            px = int(xs2[idx2] * step)
-            col = int(np.floor(px / cell_w))
-            row = int(np.floor(py / cell_h))
-            col = max(0, min(cols - 1, col))
-            row = max(0, min(rows - 1, row))
-
-        # Gather stats at chosen pixel
-        r0, g0, b0 = pixels_rgb[py, px, :].astype(np.float32)
-        br = float((r0 + g0 + b0) / 3.0)
+    
+    # Use average cell size for the square
+    cell_size = int((cell_w + cell_h) / 2)
+    
+    # Compute brightness for the entire image
+    gray = pixels_rgb.astype(np.float32).mean(axis=2)  # (H, W)
+    
+    # Use a sliding window to find the square with highest mean brightness
+    # Step by half a cell to ensure we don't miss the horse
+    step = max(1, cell_size // 4)
+    best_brightness = 0.0
+    best_y, best_x = 0, 0
+    
+    for y in range(0, h - cell_size + 1, step):
+        for x in range(0, w - cell_size + 1, step):
+            # Compute mean brightness of this square
+            square = gray[y:y+cell_size, x:x+cell_size]
+            if square.size == 0:
+                continue
+            mean_brightness = float(square.mean())
+            if mean_brightness > best_brightness:
+                best_brightness = mean_brightness
+                best_y, best_x = y, x
+    
+    # No minimum threshold - just find the brightest square
+    if best_brightness < 50:  # Sanity check: reject if entire image is dark
+        return None
+    
+    # Map the center of the square to grid coordinates
+    center_x = best_x + cell_size // 2
+    center_y = best_y + cell_size // 2
+    
+    col = int(np.floor(center_x / cell_w))
+    row = int(np.floor(center_y / cell_h))
+    col = max(0, min(cols - 1, col))
+    row = max(0, min(rows - 1, row))
+    
+    # Compute whiteness at center
+    if 0 <= center_y < h and 0 <= center_x < w:
+        r0, g0, b0 = pixels_rgb[center_y, center_x, :].astype(np.float32)
         wh = float(abs(r0 - g0) + abs(g0 - b0))
-        return {"x": float(col), "y": float(row), "brightness": br, "whiteness": wh}
-
-    for prefer in (True, False):
-        for step in (2, 1):
-            out = try_pass(prefer, step)
-            if out is not None:
-                return out
-    return None
+    else:
+        wh = 0.0
+    
+    return {"x": float(col), "y": float(row), "brightness": best_brightness, "whiteness": wh}
 
 
 def parse_image_to_grid(
@@ -315,11 +297,6 @@ def parse_image_to_grid(
     grass_count = 0
 
     cherry_candidates = np.zeros(rows * cols, dtype=np.uint8)
-    brightness_samples: List[float] = []
-
-    best_strict: Optional[Dict[str, float]] = None
-    best_relaxed: Optional[Dict[str, float]] = None
-    best_bright: Optional[Dict[str, float]] = None
 
     sample_points = [(0.5, 0.5), (0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7)]
 
@@ -341,33 +318,12 @@ def parse_image_to_grid(
             arr = np.asarray(samples, dtype=np.float32)
             avg = arr.mean(axis=0)
             avg_r, avg_g, avg_b = float(avg[0]), float(avg[1]), float(avg[2])
-            avg_brightness = float((avg_r + avg_g + avg_b) / 3.0)
-            brightness_samples.append(avg_brightness)
 
-            avg_rg = abs(avg_r - avg_g)
-            avg_gb = abs(avg_g - avg_b)
-            avg_whiteness = float(avg_rg + avg_gb)
-
-            strict_sample: Optional[Dict[str, float]] = None
-            relaxed_sample: Optional[Dict[str, float]] = None
             cherry_hit = False
             for rr, gg, bb in samples:
                 if (not cherry_hit) and _is_cherry_pixel(rr, gg, bb):
                     cherry_hit = True
-
-                b = float((rr + gg + bb) / 3.0)
-                rg = abs(rr - gg)
-                gb = abs(gg - bb)
-                white = float(rg + gb)
-                is_whitish_strict = rg < 30 and gb < 30
-                is_whitish_relaxed = rg < 45 and gb < 45
-
-                if b > HORSE_BRIGHTNESS and is_whitish_strict:
-                    if strict_sample is None or b > strict_sample["brightness"]:
-                        strict_sample = {"brightness": b, "whiteness": white}
-                if b > (HORSE_BRIGHTNESS - 15) and is_whitish_relaxed:
-                    if relaxed_sample is None or b > relaxed_sample["brightness"]:
-                        relaxed_sample = {"brightness": b, "whiteness": white}
+                    break
 
             is_water = (
                 avg_b > avg_g
@@ -383,43 +339,13 @@ def parse_image_to_grid(
             else:
                 grid[r][c] = "grass"
                 grass_count += 1
-                if best_bright is None or avg_brightness > best_bright["brightness"]:
-                    best_bright = {"x": float(c), "y": float(r), "brightness": avg_brightness, "whiteness": avg_whiteness}
 
             if (not is_water) and cherry_hit:
                 cherry_candidates[r * cols + c] = 1
 
-            if strict_sample is not None:
-                if best_strict is None or strict_sample["brightness"] > best_strict["brightness"]:
-                    best_strict = {
-                        "x": float(c),
-                        "y": float(r),
-                        "brightness": float(strict_sample["brightness"]),
-                        "whiteness": float(strict_sample["whiteness"]),
-                    }
-            elif relaxed_sample is not None:
-                if best_relaxed is None or relaxed_sample["brightness"] > best_relaxed["brightness"]:
-                    best_relaxed = {
-                        "x": float(c),
-                        "y": float(r),
-                        "brightness": float(relaxed_sample["brightness"]),
-                        "whiteness": float(relaxed_sample["whiteness"]),
-                    }
-
-    # Finalize horse position with fallback strategy (strict -> relaxed -> pixel -> brightest cell)
-    horse_method = "strict"
-    horse_stats = best_strict
-    if horse_stats is None and best_relaxed is not None:
-        horse_method = "relaxed"
-        horse_stats = best_relaxed
-    if horse_stats is None:
-        best_pixel = _find_horse_by_bright_pixel(pixels, cell_w, cell_h, rows, cols, grid)
-        if best_pixel is not None:
-            horse_method = "pixel"
-            horse_stats = best_pixel
-    if horse_stats is None and best_bright is not None:
-        horse_method = "brightest"
-        horse_stats = best_bright
+    # Find horse using brightest square algorithm (most reliable)
+    horse_method = "brightest_square"
+    horse_stats = _find_horse_by_brightest_square(pixels, cell_w, cell_h, rows, cols)
 
     if horse_stats is None:
         raise RuntimeError("Could not detect horse position")
@@ -452,15 +378,6 @@ def parse_image_to_grid(
             cherry_count += 1
             cherry_cells.append((x, y))
 
-    # Confidence stats
-    brightness_samples.sort()
-    if brightness_samples:
-        p90 = brightness_samples[int(len(brightness_samples) * 0.9)]
-        p99 = brightness_samples[int(len(brightness_samples) * 0.99)]
-    else:
-        p90 = 0.0
-        p99 = 0.0
-
     debug: Dict[str, object] = {
         "img_w": w,
         "img_h": h,
@@ -472,8 +389,6 @@ def parse_image_to_grid(
         "horse_method": horse_method,
         "horse_brightness": horse_stats.get("brightness"),
         "horse_whiteness": horse_stats.get("whiteness"),
-        "brightness_p90": float(p90),
-        "brightness_p99": float(p99),
     }
 
     return ParsedGrid(
