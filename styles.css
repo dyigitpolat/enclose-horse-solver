@@ -80,8 +80,15 @@ h1 .icon {
   align-items: start;
 }
 
-/* Keep configuration panel on the left at all widths. */
-@media (max-width: 900px) {
+/* Reduce config panel width at medium screens */
+@media (max-width: 1200px) {
+  .app-grid {
+    grid-template-columns: 340px minmax(0, 1fr);
+    gap: 1.25rem;
+  }
+}
+
+@media (max-width: 1000px) {
   .container {
     padding: 1rem;
   }
@@ -92,9 +99,26 @@ h1 .icon {
   }
 }
 
-@media (max-width: 700px) {
+/* Stack vertically when solution width would be smaller than config width */
+@media (max-width: 800px) {
   .app-grid {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .panel-config {
+    max-width: 600px;
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  .panel-solution {
+    width: 100%;
+  }
+
+  /* Force stats to 2 columns in vertical mode */
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
     gap: 0.75rem;
   }
 }
@@ -262,6 +286,20 @@ input[type="number"]:focus {
   color: var(--danger);
 }
 
+.status.warning {
+  display: block;
+  background: rgba(255, 176, 0, 0.12);
+  border: 1px solid rgba(255, 176, 0, 0.35);
+  color: var(--enclosed-border);
+}
+
+.help-text {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+
 .auto-detect-info {
   background: var(--bg-input);
   padding: 0.75rem;
@@ -283,11 +321,31 @@ input[type="number"]:focus {
   margin-bottom: 1.5rem;
 }
 
+/* Shrink stats to 2 columns when solution panel gets narrow */
+@media (max-width: 1100px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+}
+
 .stat-box {
   background: var(--bg-input);
   border-radius: 8px;
   padding: 1rem;
   text-align: center;
+}
+
+/* Shrink stat boxes when narrow */
+@media (max-width: 1100px) {
+  .stat-box {
+    padding: 0.75rem;
+  }
+
+  .stat-value {
+    font-size: 2rem;
+  }
 }
 
 .stat-value {
@@ -439,8 +497,8 @@ input[type="number"]:focus {
   padding: 2rem;
 }
 
-/* Desktop: keep the whole app in-view (no page scroll). Panels scroll internally if needed. */
-@media (min-width: 1101px) {
+/* Desktop side-by-side: keep the whole app in-view (no page scroll). Panels scroll internally if needed. */
+@media (min-width: 801px) {
   body {
     height: 100vh;
     overflow: hidden;
@@ -490,6 +548,77 @@ input[type="number"]:focus {
   .panel-solution .placeholder {
     min-height: 0;
     flex: 1 1 auto;
+  }
+}
+
+/* Mobile/tablet vertical stack: allow page scroll, natural flow */
+@media (max-width: 800px) {
+  body {
+    height: auto;
+    min-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .container {
+    height: auto;
+    min-height: 100vh;
+    padding: 1rem;
+  }
+
+  .app-grid {
+    height: auto;
+    min-height: auto;
+  }
+
+  .panel {
+    height: auto;
+    max-height: none;
+  }
+
+  .panel-body {
+    overflow: visible;
+    padding: 1rem;
+  }
+
+  .panel-solution .panel-body {
+    overflow: visible;
+  }
+
+  #resultsContent {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    gap: 1rem;
+  }
+
+  .canvas-container {
+    width: 100%;
+    min-height: 400px;
+    height: auto;
+  }
+
+  .wall-coords {
+    max-height: 200px;
+  }
+
+  .legend {
+    flex-wrap: wrap;
+  }
+}
+
+/* Very small screens: single column stats */
+@media (max-width: 480px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+
+  .stat-box {
+    padding: 0.6rem;
+  }
+
+  .stat-value {
+    font-size: 1.8rem;
   }
 }
 

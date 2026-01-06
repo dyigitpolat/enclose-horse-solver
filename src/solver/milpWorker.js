@@ -216,7 +216,9 @@ async function solveMILP(payload) {
 
   const res = glp.solve(model, opts);
   const status = res?.result?.status ?? glp.GLP_UNDEF;
-  if (status !== glp.GLP_OPT && status !== glp.GLP_FEAS) {
+  const isOptimal = status === glp.GLP_OPT;
+  const isFeasible = status === glp.GLP_FEAS || isOptimal;
+  if (!isFeasible) {
     throw new Error("GLPK returned status " + status);
   }
 
@@ -227,7 +229,7 @@ async function solveMILP(payload) {
     if (val > 0.5) walls.push({ x: coordX[i], y: coordY[i] });
   }
 
-  return { walls, ms: Date.now() - t0, status };
+  return { walls, ms: Date.now() - t0, status, isOptimal };
 }
 
 self.onmessage = (ev) => {
@@ -236,7 +238,14 @@ self.onmessage = (ev) => {
   (async () => {
     try {
       const out = await solveMILP(payload);
-      self.postMessage({ ok: true, solveId, walls: out.walls, ms: out.ms, status: out.status });
+      self.postMessage({
+        ok: true,
+        solveId,
+        walls: out.walls,
+        ms: out.ms,
+        status: out.status,
+        isOptimal: out.isOptimal,
+      });
     } catch (e) {
       self.postMessage({ ok: false, solveId, error: e?.message ? e.message : String(e) });
     }

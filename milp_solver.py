@@ -1,7 +1,9 @@
 """
-MILP solver for the Horse Pen problem (used to verify optimality on preview.webp).
+MILP solver for the Horse Pen problem (verification / ground truth).
 
-This formulation solved preview.webp at k=13 with area=95 in ~2-3 seconds on my machine.
+This matches the browser MILP formulation (GLPK) and uses the same image parsing logic as JS:
+- auto grid dimension detection
+- water/horse/cherry detection
 
 Requires:
   - `pip install pulp`
@@ -11,16 +13,26 @@ Requires:
 from __future__ import annotations
 
 from collections import defaultdict
+import argparse
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import pulp
 
-from exact_solver import parse_preview_webp
+from hp_image import CHERRY_BONUS, ParsedGrid, parse_image_to_grid
 
 
-def solve_preview_k13(time_limit_s: int = 10) -> Tuple[int, List[Tuple[int, int]]]:
-    pg = parse_preview_webp(cols=19, rows=23, water_thresh=50, horse_thresh=160)
+def solve_milp(
+    pg: ParsedGrid,
+    k: int,
+    time_limit_s: float = 10.0,
+    cherry_bonus: int = CHERRY_BONUS,
+    msg: bool = False,
+) -> Tuple[str, Optional[int], Optional[int], Optional[int], List[Tuple[int, int]]]:
+    """
+    Solve the MILP and return (status, score, area, cherries, walls_xy).
+    Score = area + cherry_bonus * cherries
+    """
 
     w, h = pg.width, pg.height
 
@@ -57,7 +69,6 @@ def solve_preview_k13(time_limit_s: int = 10) -> Tuple[int, List[Tuple[int, int]
         if x == 0 or x == w - 1 or y == 0 or y == h - 1:
             boundary.add(u)
 
-    k = 13
     m = n
 
     prob = pulp.LpProblem("horse_pen", pulp.LpMaximize)
@@ -66,8 +77,11 @@ def solve_preview_k13(time_limit_s: int = 10) -> Tuple[int, List[Tuple[int, int]
     wall = pulp.LpVariable.dicts("w", range(n), lowBound=0, upBound=1, cat=pulp.LpBinary)  # wall
     f = pulp.LpVariable.dicts("f", edges, lowBound=0, cat=pulp.LpContinuous)  # flow
 
-    # Maximize reachable tiles
-    prob += pulp.lpSum(r[i] for i in range(n))
+    # Objective: maximize sum r_i (+ cherry_bonus if cell is a cherry)
+    weights = []
+    for i, (x, y) in enumerate(coords):
+        weights.append(1 + (cherry_bonus if pg.grid[y][x] == "cherry" else 0))
+    prob += pulp.lpSum(weights[i] * r[i] for i in range(n))
 
     # Wall budget
     prob += pulp.lpSum(wall[i] for i in range(n)) <= k
@@ -103,21 +117,50 @@ def solve_preview_k13(time_limit_s: int = 10) -> Tuple[int, List[Tuple[int, int]
         else:
             prob += inflow - outflow == r[v]
 
-    solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit_s)
+    solver = pulp.PULP_CBC_CMD(msg=msg, timeLimit=float(time_limit_s))
     prob.solve(solver)
 
-    area = sum(1 for i in range(n) if pulp.value(r[i]) > 0.5)
-    walls = [coords[i] for i in range(n) if pulp.value(wall[i]) > 0.5]
-    walls.sort()
+    status = pulp.LpStatus.get(prob.status, str(prob.status))
 
-    return area, walls
+    # If the solver didn't produce a solution, return empty walls + None metrics.
+    obj = pulp.value(prob.objective)
+    if obj is None:
+        return status, None, None, None, []
+
+    area = sum(1 for i in range(n) if (pulp.value(r[i]) or 0.0) > 0.5)
+    walls = [coords[i] for i in range(n) if (pulp.value(wall[i]) or 0.0) > 0.5]
+    walls.sort()
+    cherries = sum(1 for i in range(n) if (pulp.value(r[i]) or 0.0) > 0.5 and weights[i] > 1)
+    score = int(round(float(obj)))
+
+    return status, score, area, cherries, walls
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="Solve Horse Pen MILP from a screenshot image.")
+    ap.add_argument("image", help="Path to screenshot (png/webp/jpg).")
+    ap.add_argument("--walls", "-k", type=int, default=13, help="Wall budget (max number of walls to place).")
+    ap.add_argument("--time", type=float, default=10.0, help="CBC time limit (seconds).")
+    ap.add_argument("--cols", type=int, default=None, help="Override detected grid columns.")
+    ap.add_argument("--rows", type=int, default=None, help="Override detected grid rows.")
+    ap.add_argument("--msg", action="store_true", help="Enable CBC solver output.")
+    args = ap.parse_args()
+
+    pg = parse_image_to_grid(args.image, cols=args.cols, rows=args.rows)
     t0 = time.time()
-    area, walls = solve_preview_k13(time_limit_s=10)
+    status, score, area, cherries, walls = solve_milp(
+        pg, k=int(args.walls), time_limit_s=float(args.time), msg=bool(args.msg)
+    )
     dt = time.time() - t0
-    print(f"area={area} walls={len(walls)} time={dt:.2f}s")
+
+    print(
+        f"detected grid={pg.width}x{pg.height} horse={pg.horse} cherries={len(pg.cherry_cells)} "
+        f"(method={pg.debug.get('horse_method')})"
+    )
+    print(
+        f"status={status} score={score} area={area} cherries_enclosed={cherries} "
+        f"walls={len(walls)} time={dt:.2f}s"
+    )
     print("walls:", walls)
 
 

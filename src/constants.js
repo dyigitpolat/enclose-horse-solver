@@ -11,6 +11,9 @@
     CHERRY_BONUS: 3,
   });
 
+  // Default solve time budget (users can override in the UI).
   HP.TIME_BUDGET_MS = 10_000;
+  // Safety cap for the UI/worker time budget to avoid accidental multi-minute solves.
+  HP.TIME_BUDGET_MS_MAX = 120_000;
 })();
 

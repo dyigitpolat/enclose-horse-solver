@@ -23,6 +23,7 @@ const detectedDims = document.getElementById("detectedDims");
 const parseSummary = document.getElementById("parseSummary");
 
 const wallCountInput = document.getElementById("wallCount");
+const timeBudgetSecInput = document.getElementById("timeBudgetSec");
 
 const areaValue = document.getElementById("areaValue");
 const wallsUsed = document.getElementById("wallsUsed");
@@ -154,15 +155,18 @@ function analyze() {
       document.getElementById("debugInfo").textContent = debugText;
 
       const wallCount = parseInt(wallCountInput.value, 10);
+      const budgetSecRaw = parseFloat(timeBudgetSecInput?.value ?? "10");
+      const budgetSec = Number.isFinite(budgetSecRaw) ? Math.max(1, Math.min(120, budgetSecRaw)) : 10;
+      const timeBudgetMs = Math.round(budgetSec * 1000);
 
       // Cancel any in-flight solve
       if (typeof cancelSolve === "function") cancelSolve();
       cancelSolve = null;
 
-      showStatus(`Solving (MILP, up to ${Math.round(window.HorsePen.TIME_BUDGET_MS / 1000)}s)…`, "success");
+      showStatus(`Solving (MILP, up to ${budgetSec}s)…`, "success");
 
       // Prefer async MILP (worker) to avoid UI freezes; solver.js handles fallback.
-      const solvePromise = window.HorsePen.solveEnclosure(gridData, wallCount);
+      const solvePromise = window.HorsePen.solveEnclosure(gridData, wallCount, { timeBudgetMs });
       solution = await solvePromise;
 
       window.HorsePen.renderResults({
@@ -180,10 +184,22 @@ function analyze() {
       loading.classList.remove("active");
       analyzeBtn.disabled = false;
       if (solution?.debug?.solver === "milp_worker") {
-        showStatus(
-          `MILP solved in ${solution.debug.ms ?? "?"}ms: area ${solution.area} using ${solution.walls.length} walls`,
-          "success"
-        );
+        const usedMs = solution.debug.ms ?? null;
+        const isOptimal = solution.debug.isOptimal;
+        const budgetMs = solution.debug.timeBudgetMs ?? timeBudgetMs;
+        const budgetUsed = usedMs != null && budgetMs != null ? usedMs >= Math.max(0, budgetMs - 50) : false;
+
+        if (isOptimal === false || (isOptimal !== true && budgetUsed)) {
+          showStatus(
+            `Time budget exhausted (${Math.round(budgetMs / 1000)}s). Returned best found: score ${solution.score} (area ${solution.area}, ${solution.walls.length} walls). Increase time budget and re-run to improve / prove optimality.`,
+            "warning"
+          );
+        } else {
+          showStatus(
+            `MILP solved in ${usedMs ?? "?"}ms: score ${solution.score} (area ${solution.area}, ${solution.walls.length} walls)`,
+            "success"
+          );
+        }
       } else {
         showStatus(`Found enclosure of ${solution.area} tiles using ${solution.walls.length} walls`, "success");
       }
@@ -192,7 +208,12 @@ function analyze() {
       analyzeBtn.disabled = false;
       resultsContent.style.display = "none";
       placeholder.style.display = "flex";
-      showStatus(`Error: ${err.message}`, "error");
+      const msg = String(err?.message || err);
+      if (msg.includes("timed out")) {
+        showStatus(`Error: ${msg}. Try increasing the time budget and re-run.`, "warning");
+      } else {
+        showStatus(`Error: ${msg}`, "error");
+      }
       // eslint-disable-next-line no-console
       console.error(err);
     }

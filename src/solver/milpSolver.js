@@ -11,7 +11,9 @@
    *   { area, walls: [{x,y}], enclosed: Set("x,y"), debug: {...} }
    */
   HP.solveEnclosureMILPAsync = function solveEnclosureMILPAsync(gridData, maxWalls, opts = {}) {
-    const timeBudgetMs = Math.max(1000, Math.min(HP.TIME_BUDGET_MS, opts.timeBudgetMs ?? HP.TIME_BUDGET_MS));
+    const requested = Number(opts.timeBudgetMs ?? HP.TIME_BUDGET_MS);
+    const maxBudget = Number(HP.TIME_BUDGET_MS_MAX ?? 120_000);
+    const timeBudgetMs = Math.max(1000, Math.min(maxBudget, Number.isFinite(requested) ? requested : HP.TIME_BUDGET_MS));
     const { promise } = startWorkerSolve(gridData, maxWalls, timeBudgetMs);
     return promise;
   };
@@ -84,11 +86,30 @@
           return;
         }
 
+        // Compute score (area + cherry bonus per enclosed cherry).
+        const cherryBonus = HP.SCORING?.CHERRY_BONUS ?? 3;
+        let cherriesInPen = 0;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            if (gridData.grid[y][x] !== "cherry") continue;
+            if (enclosed.has(`${x},${y}`)) cherriesInPen++;
+          }
+        }
+        const score = enclosed.size + cherryBonus * cherriesInPen;
+
         resolve({
           area: enclosed.size,
+          score,
+          cherries: cherriesInPen,
           walls,
           enclosed,
-          debug: { solver: "milp_worker", ms: msg.ms ?? null, status: msg.status ?? null },
+          debug: {
+            solver: "milp_worker",
+            ms: msg.ms ?? null,
+            status: msg.status ?? null,
+            isOptimal: msg.isOptimal ?? null,
+            timeBudgetMs,
+          },
         });
       };
 
