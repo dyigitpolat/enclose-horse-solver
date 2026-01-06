@@ -90,6 +90,11 @@ def solve_milp(
     prob += wall[horse] == 0
     prob += r[horse] == 1
 
+    # Cherries cannot have walls placed on them
+    cherry_ids = [vid[(x, y)] for x, y in pg.cherry_cells if (x, y) in vid]
+    for c_id in cherry_ids:
+        prob += wall[c_id] == 0
+
     # Reachable implies not a wall
     for i in range(n):
         prob += r[i] <= 1 - wall[i]

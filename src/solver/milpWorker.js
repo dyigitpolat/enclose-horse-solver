@@ -127,6 +127,15 @@ async function solveMILP(payload) {
   ensureConstraint("horse_w", FX(0));
   addCoef("horse_w", "w_" + horseId, 1);
 
+  // Cherries cannot have walls placed on them
+  for (let i = 0; i < n; i++) {
+    if (nodeCherry[i] === 1) {
+      const c = "cherry_w_" + i;
+      ensureConstraint(c, FX(0));
+      addCoef(c, "w_" + i, 1);
+    }
+  }
+
   // Boundary cannot be reachable
   for (const b of boundary) {
     if (b === horseId) continue;
