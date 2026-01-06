@@ -36,7 +36,12 @@ async function solveMILP(payload) {
   const horseIndex = horseY * width + horseX;
   const horseId = idOf[horseIndex];
   if (horseId < 0) throw new Error("horse not on passable cell");
-  if (n > 650) throw new Error("grid too large for exact MILP in browser");
+  if (n > 1200) {
+    throw new Error(
+      `Grid too large for browser MILP solver: ${width}×${height} = ${n} passable cells (limit: 1200). ` +
+      `Try a smaller image or use the Python solver for very large grids.`
+    );
+  }
 
   const edges = [];
   const und = new Set();

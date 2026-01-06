@@ -6,10 +6,15 @@ Finds optimal subset region to enclose with given wall count.
 import numpy as np
 from PIL import Image
 from collections import deque, defaultdict
+import os
 import time
 import random
 from itertools import combinations
 import heapq
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+FIXTURES_DIR = os.path.join(ROOT_DIR, "tests", "fixtures")
+PREVIEW_PATH = os.path.join(FIXTURES_DIR, "preview.webp")
 
 # ============ CORE ALGORITHM ============
 
@@ -684,10 +689,10 @@ def test_actual_screenshot():
     
     try:
         cols, rows = 19, 23
-        data = parse_image('preview.webp', cols, rows, water_thresh=50, horse_thresh=160)
+        data = parse_image(PREVIEW_PATH, cols, rows, water_thresh=50, horse_thresh=160)
         
         if data['horsePos'] is None:
-            img = Image.open('preview.webp')
+            img = Image.open(PREVIEW_PATH)
             pixels = np.array(img, dtype=np.float32)
             img_h, img_w = pixels.shape[:2]
             cell_w, cell_h = img_w / cols, img_h / rows

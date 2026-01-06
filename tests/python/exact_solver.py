@@ -13,10 +13,15 @@ from dataclasses import dataclass
 from collections import deque
 from itertools import combinations
 import time
+import os
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from PIL import Image
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+FIXTURES_DIR = os.path.join(ROOT_DIR, "tests", "fixtures")
+PREVIEW_PATH = os.path.join(FIXTURES_DIR, "preview.webp")
 
 
 INF = 10**9
@@ -103,7 +108,7 @@ class ParsedGrid:
 
 
 def parse_preview_webp(cols: int = 19, rows: int = 23, water_thresh: int = 50, horse_thresh: int = 160) -> ParsedGrid:
-    img = Image.open("preview.webp")
+    img = Image.open(PREVIEW_PATH)
     pixels = np.array(img, dtype=np.float32)
     img_h, img_w = pixels.shape[:2]
 
@@ -145,7 +150,7 @@ def parse_preview_webp_with_fallback(cols: int = 19, rows: int = 23, water_thres
     """
     Same as parse_preview_webp, but if horse is not detected via thresholds, picks the brightest cell.
     """
-    img = Image.open("preview.webp")
+    img = Image.open(PREVIEW_PATH)
     pixels = np.array(img, dtype=np.float32)
     img_h, img_w = pixels.shape[:2]
 

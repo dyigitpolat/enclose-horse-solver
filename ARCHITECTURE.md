@@ -9,13 +9,13 @@ This repo is a **static browser app** that:
 - Runs a solver to place up to **N wall tiles** that prevent the horse from reaching the map edge.
 - Renders the solution grid + wall coordinates.
 
-Entry point: `horse_pen_optimizer.html`
+Entry point: `index.html`
 
 ## Directory structure
 
-- `horse_pen_optimizer.html`
+- `index.html`
   - HTML layout only (no big inline JS/CSS).
-  - Loads `styles.css` and JS files via `<script defer ...>` (no bundler / works from `file://`).
+  - Loads `styles.css` and JS files via `<script defer ...>` (no bundler).
 - `styles.css`
   - All UI styling.
 - `src/main.js`
@@ -82,7 +82,7 @@ It is good for quick feedback, but it is **not guaranteed optimal**.
 
 ### Exact solver for small k (next step)
 
-To guarantee optimal results for small wall counts (e.g. **k=13** on `preview.webp`), the next step is to add an **exact** algorithm based on **important separators** (parameterized by k).
+To guarantee optimal results for small wall counts (e.g. **k=13** on `tests/fixtures/preview.webp`), the next step is to add an **exact** algorithm based on **important separators** (parameterized by k).
 
 High level:
 
@@ -94,7 +94,7 @@ This is exponential in k in the worst case, but practical for small k on grids o
 
 ### MILP proof / verification (Python)
 
-For `preview.webp` and `p2.png`, `milp_solver.py` contains a Mixed Integer Linear Programming formulation
+For `tests/fixtures/preview.webp` and `tests/fixtures/p2.png`, `milp_solver.py` contains a Mixed Integer Linear Programming formulation
 that finds **area=95 with k=13** in a couple seconds using CBC (via PuLP).
 
 ### MILP in the browser (JS)
@@ -107,6 +107,6 @@ builds the **same MILP formulation** in `src/solver/milpSolver.js` for non-prese
 - **Change thresholds**: edit `src/constants.js`.
 - **Change detection**: edit `src/image.js`.
 - **Change solver**: implement additional solvers under `src/solver/` and dispatch in `src/solver/solver.js`.
-- **UI changes**: `horse_pen_optimizer.html` + `styles.css`.
+- **UI changes**: `index.html` + `styles.css`.
 
 

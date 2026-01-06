@@ -1,0 +1,10 @@
+{
+  "name": "horsepen",
+  "private": true,
+  "devDependencies": {
+    "pngjs": "^7.0.0"
+  },
+  "scripts": {
+    "test:js": "node tests/js/test_js_parsing.js"
+  }
+}
