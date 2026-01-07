@@ -70,6 +70,16 @@ function handleFile(file) {
     return;
   }
 
+  // Reset UI immediately (so old minimap/solution doesn't linger)
+  loading.classList.remove("active");
+  resultsContent.style.display = "none";
+  placeholder.style.display = "flex";
+  areaValue.textContent = "0";
+  wallsUsed.textContent = "0";
+  wallsLeft.textContent = "0";
+  efficiency.textContent = "0";
+  wallList.innerHTML = "—";
+
   // Reset per-image state
   detectedGrid = null;
   autoDetectInfo.style.display = "none";
@@ -110,6 +120,30 @@ function handleFile(file) {
       parseSummary.textContent = validation.summary;
       analyzeBtn.disabled = false;
       showStatus("Image loaded and processed successfully.", "success");
+
+      // Immediately show a minimap preview (no optimization yet).
+      placeholder.style.display = "none";
+      resultsContent.style.display = "flex";
+      loading.classList.remove("active");
+      const wallCount = parseInt(wallCountInput.value, 10);
+      // Render on the next frame so layout (panel sizing) is finalized; otherwise the canvas can be tiny/appear blank.
+      requestAnimationFrame(() => {
+        try {
+          window.HorsePen.renderPreview({
+            gridData,
+            maxWalls: Number.isFinite(wallCount) ? wallCount : 0,
+            gridCanvas,
+            areaValueEl: areaValue,
+            wallsUsedEl: wallsUsed,
+            wallsLeftEl: wallsLeft,
+            efficiencyEl: efficiency,
+            wallListEl: wallList,
+          });
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error("renderPreview failed", e);
+        }
+      });
     };
   };
   reader.readAsDataURL(file);
@@ -206,8 +240,24 @@ function analyze() {
     } catch (err) {
       loading.classList.remove("active");
       analyzeBtn.disabled = false;
-      resultsContent.style.display = "none";
-      placeholder.style.display = "flex";
+      // Keep the minimap visible (preview) even if optimization fails.
+      if (gridData) {
+        placeholder.style.display = "none";
+        resultsContent.style.display = "flex";
+        window.HorsePen.renderPreview({
+          gridData,
+          maxWalls: parseInt(wallCountInput.value, 10),
+          gridCanvas,
+          areaValueEl: areaValue,
+          wallsUsedEl: wallsUsed,
+          wallsLeftEl: wallsLeft,
+          efficiencyEl: efficiency,
+          wallListEl: wallList,
+        });
+      } else {
+        resultsContent.style.display = "none";
+        placeholder.style.display = "flex";
+      }
       const msg = String(err?.message || err);
       if (msg.includes("timed out")) {
         showStatus(`Error: ${msg}. Try increasing the time budget and re-run.`, "warning");
@@ -222,22 +272,35 @@ function analyze() {
 
 // Keep the map fitting the viewport while resizing.
 window.addEventListener("resize", () => {
-  if (!gridData || !solution) return;
+  if (!gridData) return;
   if (resizeRaf) cancelAnimationFrame(resizeRaf);
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = null;
     try {
-      window.HorsePen.renderResults({
-        gridData,
-        solution,
-        maxWalls: parseInt(wallCountInput.value, 10),
-        gridCanvas,
-        areaValueEl: areaValue,
-        wallsUsedEl: wallsUsed,
-        wallsLeftEl: wallsLeft,
-        efficiencyEl: efficiency,
-        wallListEl: wallList,
-      });
+      if (solution) {
+        window.HorsePen.renderResults({
+          gridData,
+          solution,
+          maxWalls: parseInt(wallCountInput.value, 10),
+          gridCanvas,
+          areaValueEl: areaValue,
+          wallsUsedEl: wallsUsed,
+          wallsLeftEl: wallsLeft,
+          efficiencyEl: efficiency,
+          wallListEl: wallList,
+        });
+      } else {
+        window.HorsePen.renderPreview({
+          gridData,
+          maxWalls: parseInt(wallCountInput.value, 10),
+          gridCanvas,
+          areaValueEl: areaValue,
+          wallsUsedEl: wallsUsed,
+          wallsLeftEl: wallsLeft,
+          efficiencyEl: efficiency,
+          wallListEl: wallList,
+        });
+      }
     } catch {
       // ignore resize redraw errors
     }

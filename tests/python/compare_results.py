@@ -69,8 +69,8 @@ if __name__ == '__main__':
             
             print(f'  Grid:     {r2["grid"]} {"✓" if grid_ok else "✗ MISMATCH"}')
             print(f'  Horse:    {r2["horse"]} {"✓" if horse_ok else "✗ MISMATCH"}')
-            print(f'  Water:    {r2["water"]} (expected {r1["water"]}) {"✓" if water_ok else "✗ MISMATCH"}')
-            print(f'  Grass:    {r2["grass"]} (expected {r1["grass"]}) {"✓" if grass_ok else "✗ MISMATCH"}')
+                print(f'  Water:    {r2["water"]} (expected {r1["water"]}) {"✓" if water_ok else "✗ MISMATCH"}')
+                print(f'  Grass:    {r2["grass"]} (expected {r1["grass"]}) {"✓" if grass_ok else "✗ MISMATCH"}')
             
             if r1["cherries"] > 0 or r2["cherries"] > 0:
                 print(f'  Cherries: {r2["cherries"]} {"✓" if cherry_ok else "✗ MISMATCH"}')

@@ -1,6 +1,98 @@
 (() => {
   const HP = window.HorsePen;
 
+  HP.renderPreview = function renderPreview({
+    gridData,
+    maxWalls,
+    gridCanvas,
+    areaValueEl,
+    wallsUsedEl,
+    wallsLeftEl,
+    efficiencyEl,
+    wallListEl,
+  }) {
+    if (!gridData) return;
+    const { grid, width, height, horsePos } = gridData;
+
+    // Stats: not optimized yet
+    if (areaValueEl) areaValueEl.textContent = "0";
+    if (wallsUsedEl) wallsUsedEl.textContent = "0";
+    if (wallsLeftEl) wallsLeftEl.textContent = String(Number.isFinite(maxWalls) ? maxWalls : 0);
+    if (efficiencyEl) efficiencyEl.textContent = "0";
+    if (wallListEl) wallListEl.innerHTML = "<em>Not optimized yet — click “Analyze &amp; Optimize”.</em>";
+
+    // Draw base grid (no walls/enclosure)
+    const canvas = gridCanvas;
+    const ctx = canvas.getContext("2d");
+
+    const cellSize = computeCellSizeToFitViewport(canvas, width, height);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = `${width * cellSize}px`;
+    canvas.style.height = `${height * cellSize}px`;
+    canvas.width = Math.round(width * cellSize * dpr);
+    canvas.height = Math.round(height * cellSize * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const cssVar = (name, fallback) => (rootStyle.getPropertyValue(name).trim() || fallback);
+    const colors = {
+      grass: cssVar("--grass", "#2d5a3d"),
+      grassDark: cssVar("--grass-light", "#1f4029"),
+      water: cssVar("--water", "#2f79b8"),
+      waterDark: cssVar("--water-dark", "#1f5688"),
+      cherry: cssVar("--cherry", "#ff3b3b"),
+      cherryLeaf: cssVar("--cherry-leaf", "#2ecc71"),
+      horse: cssVar("--horse", "#ffffff"),
+      horseBorder: "#5dff88",
+    };
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const cellType = grid[y][x];
+        let color;
+        if (cellType === "water") {
+          color = (x + y) % 2 === 0 ? colors.water : colors.waterDark;
+        } else {
+          color = (x + y) % 2 === 0 ? colors.grass : colors.grassDark;
+        }
+
+        ctx.fillStyle = color;
+        ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+
+        // Draw cherry marker on top of the tile.
+        if (cellType === "cherry") {
+          const cx = x * cellSize + cellSize * 0.5;
+          const cy = y * cellSize + cellSize * 0.6;
+          const r = Math.max(2, cellSize * 0.12);
+          ctx.fillStyle = colors.cherry;
+          ctx.beginPath();
+          ctx.arc(cx - r * 0.55, cy, r, 0, Math.PI * 2);
+          ctx.arc(cx + r * 0.55, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = colors.cherryLeaf;
+          ctx.fillRect(cx - 1, cy - r - 3, 2, 4);
+        }
+      }
+    }
+
+    // Draw horse
+    if (horsePos) {
+      const hx = horsePos.x * cellSize + cellSize / 2;
+      const hy = horsePos.y * cellSize + cellSize / 2;
+      const hr = cellSize * 0.35;
+
+      ctx.fillStyle = colors.horse;
+      ctx.beginPath();
+      ctx.arc(hx, hy, hr, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = colors.horseBorder;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  };
+
   HP.renderResults = function renderResults({
   gridData,
   solution,
