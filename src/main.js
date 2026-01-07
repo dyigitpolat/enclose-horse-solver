@@ -5,6 +5,7 @@ let solution = null;
 let detectedGrid = null; // { cols, rows }
 let cancelSolve = null;
 let resizeRaf = null;
+let loadToken = 0;
 
 // ============ DOM ============
 const uploadZone = document.getElementById("uploadZone");
@@ -13,6 +14,7 @@ const preview = document.getElementById("preview");
 const analyzeBtn = document.getElementById("analyzeBtn");
 const status = document.getElementById("status");
 const loading = document.getElementById("loading");
+const loadingText = loading?.querySelector(".loading-text");
 const resultsContent = document.getElementById("resultsContent");
 const placeholder = document.getElementById("placeholder");
 const gridCanvas = document.getElementById("gridCanvas");
@@ -63,17 +65,32 @@ function showStatus(message, type) {
   status.className = `status ${type}`;
 }
 
+function setLoadingText(text) {
+  if (loadingText) loadingText.textContent = text;
+}
+
+function clearCanvas(canvas) {
+  const ctx = canvas?.getContext?.("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
 // ============ FILE HANDLING ============
 function handleFile(file) {
+  const token = (loadToken += 1);
+
   if (!file.type.startsWith("image/")) {
     showStatus("Please upload an image file", "error");
     return;
   }
 
   // Reset UI immediately (so old minimap/solution doesn't linger)
-  loading.classList.remove("active");
-  resultsContent.style.display = "none";
-  placeholder.style.display = "flex";
+  imageLoaded = false;
+  setLoadingText("Loading image...");
+  loading.classList.add("active");
+  placeholder.style.display = "none";
+  resultsContent.style.display = "flex";
+  clearCanvas(gridCanvas);
   areaValue.textContent = "0";
   wallsUsed.textContent = "0";
   wallsLeft.textContent = "0";
@@ -89,64 +106,112 @@ function handleFile(file) {
   if (typeof cancelSolve === "function") cancelSolve();
   cancelSolve = null;
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    preview.src = e.target.result;
-    preview.style.display = "block";
-    uploadZone.classList.add("has-image");
-    uploadZone.querySelector(".upload-icon").style.display = "none";
-    uploadZone.querySelector(".upload-text").style.display = "none";
+  // Update thumbnail immediately (avoid blocking on FileReader base64 conversion).
+  // Revoke any previous object URL to avoid leaking blobs.
+  const prevUrl = preview.dataset?.blobUrl;
+  if (prevUrl) {
+    URL.revokeObjectURL(prevUrl);
+    delete preview.dataset.blobUrl;
+  }
 
-    preview.onload = () => {
-      imageLoaded = true;
-      analyzeBtn.disabled = true;
+  preview.onload = null;
+  preview.onerror = null;
 
-      const dims = window.HorsePen.detectGridDimensions(preview, detectionCanvas);
-      detectedGrid = dims;
-      detectedDims.textContent = `${dims.cols} × ${dims.rows}`;
-      autoDetectInfo.style.display = "block";
+  const blobUrl = URL.createObjectURL(file);
+  preview.dataset.blobUrl = blobUrl;
+  preview.src = blobUrl;
+  preview.style.display = "block";
+  uploadZone.classList.add("has-image");
+  uploadZone.querySelector(".upload-icon").style.display = "none";
+  uploadZone.querySelector(".upload-text").style.display = "none";
 
-      // Parse immediately to verify detection is sane and the horse is visible.
-      const parsed = window.HorsePen.parseImageToGrid(preview, detectionCanvas, dims.cols, dims.rows);
-      const validation = validateParsedGrid(parsed);
-      if (!validation.ok) {
-        parseSummary.textContent = "";
-        showStatus(`Image processing failed: ${validation.reason}`, "error");
-        analyzeBtn.disabled = true;
-        return;
-      }
+  preview.onload = () => {
+    // Ignore stale loads if the user picks another file quickly.
+    if (token !== loadToken) return;
 
-      gridData = parsed;
-      parseSummary.textContent = validation.summary;
-      analyzeBtn.disabled = false;
-      showStatus("Image loaded and processed successfully.", "success");
+    // The thumbnail is ready; free the blob URL resource.
+    const url = preview.dataset?.blobUrl;
+    if (url) {
+      URL.revokeObjectURL(url);
+      delete preview.dataset.blobUrl;
+    }
 
-      // Immediately show a minimap preview (no optimization yet).
-      placeholder.style.display = "none";
-      resultsContent.style.display = "flex";
-      loading.classList.remove("active");
-      const wallCount = parseInt(wallCountInput.value, 10);
-      // Render on the next frame so layout (panel sizing) is finalized; otherwise the canvas can be tiny/appear blank.
-      requestAnimationFrame(() => {
-        try {
-          window.HorsePen.renderPreview({
-            gridData,
-            maxWalls: Number.isFinite(wallCount) ? wallCount : 0,
-            gridCanvas,
-            areaValueEl: areaValue,
-            wallsUsedEl: wallsUsed,
-            wallsLeftEl: wallsLeft,
-            efficiencyEl: efficiency,
-            wallListEl: wallList,
-          });
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.error("renderPreview failed", e);
+    imageLoaded = true;
+    analyzeBtn.disabled = true;
+
+    // Yield so the browser can paint the new thumbnail + minimap loading overlay
+    // before we run CPU-heavy parsing on the main thread.
+    setTimeout(() => {
+      if (token !== loadToken) return;
+
+      try {
+        const dims = window.HorsePen.detectGridDimensions(preview, detectionCanvas);
+        detectedGrid = dims;
+        detectedDims.textContent = `${dims.cols} × ${dims.rows}`;
+        autoDetectInfo.style.display = "block";
+
+        // Parse immediately to verify detection is sane and the horse is visible.
+        const parsed = window.HorsePen.parseImageToGrid(preview, detectionCanvas, dims.cols, dims.rows);
+        const validation = validateParsedGrid(parsed);
+        if (!validation.ok) {
+          parseSummary.textContent = "";
+          loading.classList.remove("active");
+          setLoadingText("Calculating optimal enclosure...");
+          resultsContent.style.display = "none";
+          placeholder.style.display = "flex";
+          showStatus(`Image processing failed: ${validation.reason}`, "error");
+          analyzeBtn.disabled = true;
+          return;
         }
-      });
-    };
+
+        gridData = parsed;
+        parseSummary.textContent = validation.summary;
+        analyzeBtn.disabled = false;
+        showStatus("Image loaded and processed successfully.", "success");
+
+        const wallCount = parseInt(wallCountInput.value, 10);
+        // Render on the next frame so layout (panel sizing) is finalized; otherwise the canvas can be tiny/appear blank.
+        requestAnimationFrame(() => {
+          try {
+            window.HorsePen.renderPreview({
+              gridData,
+              maxWalls: Number.isFinite(wallCount) ? wallCount : 0,
+              gridCanvas,
+              areaValueEl: areaValue,
+              wallsUsedEl: wallsUsed,
+              wallsLeftEl: wallsLeft,
+              efficiencyEl: efficiency,
+              wallListEl: wallList,
+            });
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.error("renderPreview failed", e);
+          } finally {
+            loading.classList.remove("active");
+            setLoadingText("Calculating optimal enclosure...");
+          }
+        });
+      } catch (err) {
+        loading.classList.remove("active");
+        setLoadingText("Calculating optimal enclosure...");
+        resultsContent.style.display = "none";
+        placeholder.style.display = "flex";
+        const msg = String(err?.message || err);
+        showStatus(`Image processing failed: ${msg}`, "error");
+        analyzeBtn.disabled = true;
+      }
+    }, 0);
   };
-  reader.readAsDataURL(file);
+
+  preview.onerror = () => {
+    if (token !== loadToken) return;
+    loading.classList.remove("active");
+    setLoadingText("Calculating optimal enclosure...");
+    resultsContent.style.display = "none";
+    placeholder.style.display = "flex";
+    showStatus("Failed to load image.", "error");
+    analyzeBtn.disabled = true;
+  };
 }
 
 // ============ ANALYSIS ============
@@ -156,6 +221,7 @@ function analyze() {
   // Prevent repeated clicks from spawning multiple concurrent solves.
   analyzeBtn.disabled = true;
 
+  setLoadingText("Calculating optimal enclosure...");
   loading.classList.add("active");
   placeholder.style.display = "none";
   // Use flex layout so the canvas can grow to fill available space (desktop + mobile).
@@ -191,7 +257,8 @@ function analyze() {
       const wallCount = parseInt(wallCountInput.value, 10);
       const budgetSecRaw = parseFloat(timeBudgetSecInput?.value ?? "10");
       const budgetSec = Number.isFinite(budgetSecRaw) ? Math.max(1, Math.min(120, budgetSecRaw)) : 10;
-      const timeBudgetMs = Math.round(budgetSec * 1000);
+      const scaledBudgetSec = Math.round(budgetSec * 0.3);
+      const timeBudgetMs = Math.round(scaledBudgetSec * 1000);
 
       // Cancel any in-flight solve
       if (typeof cancelSolve === "function") cancelSolve();
