@@ -86,6 +86,7 @@ function handleFile(file) {
 
   // Reset UI immediately (so old minimap/solution doesn't linger)
   imageLoaded = false;
+  analyzeBtn.disabled = true;
   setLoadingText("Loading image...");
   loading.classList.add("active");
   placeholder.style.display = "none";
