@@ -109,6 +109,14 @@
 
   const wallSet = new Set(walls.map((w) => `${w.x},${w.y}`));
 
+  const view = solution?.debug?.cropRetry?.used ? solution.debug.cropRetry.bounds : null;
+  const xStart = view ? view.x0 : 0;
+  const yStart = view ? view.y0 : 0;
+  const xEnd = view ? view.x1 : width;
+  const yEnd = view ? view.y1 : height;
+  const viewW = xEnd - xStart;
+  const viewH = yEnd - yStart;
+
   // Stats
   areaValueEl.textContent = String(area);
   wallsUsedEl.textContent = String(walls.length);
@@ -129,12 +137,12 @@
   const canvas = gridCanvas;
   const ctx = canvas.getContext("2d");
 
-  const cellSize = computeCellSizeToFitViewport(canvas, width, height);
+  const cellSize = computeCellSizeToFitViewport(canvas, viewW, viewH);
   const dpr = window.devicePixelRatio || 1;
-  canvas.style.width = `${width * cellSize}px`;
-  canvas.style.height = `${height * cellSize}px`;
-  canvas.width = Math.round(width * cellSize * dpr);
-  canvas.height = Math.round(height * cellSize * dpr);
+  canvas.style.width = `${viewW * cellSize}px`;
+  canvas.style.height = `${viewH * cellSize}px`;
+  canvas.width = Math.round(viewW * cellSize * dpr);
+  canvas.height = Math.round(viewH * cellSize * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.imageSmoothingEnabled = false;
 
@@ -154,12 +162,15 @@
     horseBorder: "#5dff88",
   };
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  for (let y = yStart; y < yEnd; y++) {
+    for (let x = xStart; x < xEnd; x++) {
       const cellType = grid[y][x];
       const cellKey = `${x},${y}`;
       const isWall = wallSet.has(cellKey);
       const isEnclosed = enclosed.has(cellKey) && !isWall;
+
+      const dx = x - xStart;
+      const dy = y - yStart;
 
       let color;
       if (isWall) {
@@ -173,12 +184,12 @@
       }
 
       ctx.fillStyle = color;
-      ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+      ctx.fillRect(dx * cellSize, dy * cellSize, cellSize, cellSize);
 
       // Draw cherry marker on top of the tile (even if enclosed).
       if (!isWall && cellType === "cherry") {
-        const cx = x * cellSize + cellSize * 0.5;
-        const cy = y * cellSize + cellSize * 0.6;
+        const cx = dx * cellSize + cellSize * 0.5;
+        const cy = dy * cellSize + cellSize * 0.6;
         const r = Math.max(2, cellSize * 0.12);
         ctx.fillStyle = colors.cherry;
         ctx.beginPath();
@@ -192,21 +203,21 @@
       if (isEnclosed && !isWall) {
         ctx.strokeStyle = colors.enclosedBorder;
         ctx.lineWidth = 2;
-        ctx.strokeRect(x * cellSize + 1, y * cellSize + 1, cellSize - 2, cellSize - 2);
+        ctx.strokeRect(dx * cellSize + 1, dy * cellSize + 1, cellSize - 2, cellSize - 2);
       }
 
       if (isWall) {
         ctx.fillStyle = "rgba(0,0,0,0.3)";
-        ctx.fillRect(x * cellSize + 2, y * cellSize + cellSize - 6, cellSize - 4, 4);
+        ctx.fillRect(dx * cellSize + 2, dy * cellSize + cellSize - 6, cellSize - 4, 4);
 
         ctx.strokeStyle = "rgba(139, 90, 43, 0.8)";
         ctx.lineWidth = 2;
         const pad = cellSize * 0.25;
         ctx.beginPath();
-        ctx.moveTo(x * cellSize + pad, y * cellSize + pad);
-        ctx.lineTo(x * cellSize + cellSize - pad, y * cellSize + cellSize - pad);
-        ctx.moveTo(x * cellSize + cellSize - pad, y * cellSize + pad);
-        ctx.lineTo(x * cellSize + pad, y * cellSize + cellSize - pad);
+        ctx.moveTo(dx * cellSize + pad, dy * cellSize + pad);
+        ctx.lineTo(dx * cellSize + cellSize - pad, dy * cellSize + cellSize - pad);
+        ctx.moveTo(dx * cellSize + cellSize - pad, dy * cellSize + pad);
+        ctx.lineTo(dx * cellSize + pad, dy * cellSize + cellSize - pad);
         ctx.stroke();
       }
     }
@@ -214,8 +225,10 @@
 
   // Draw horse
   if (horsePos) {
-    const hx = horsePos.x * cellSize + cellSize / 2;
-    const hy = horsePos.y * cellSize + cellSize / 2;
+    // Only draw if horse is inside the current view bounds.
+    if (horsePos.x >= xStart && horsePos.x < xEnd && horsePos.y >= yStart && horsePos.y < yEnd) {
+      const hx = (horsePos.x - xStart) * cellSize + cellSize / 2;
+      const hy = (horsePos.y - yStart) * cellSize + cellSize / 2;
     const hr = cellSize * 0.35;
 
     ctx.fillStyle = colors.horse;
@@ -226,6 +239,7 @@
     ctx.strokeStyle = colors.horseBorder;
     ctx.lineWidth = 2;
     ctx.stroke();
+    }
   }
 
   // Wall list

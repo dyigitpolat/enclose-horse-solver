@@ -222,8 +222,21 @@ function analyze() {
         const isOptimal = solution.debug.isOptimal;
         const budgetMs = solution.debug.timeBudgetMs ?? timeBudgetMs;
         const budgetUsed = usedMs != null && budgetMs != null ? usedMs >= Math.max(0, budgetMs - 50) : false;
+        const cropRetry = solution?.debug?.cropRetry;
+        const usedCrop = !!cropRetry?.used;
 
-        if (isOptimal === false || (isOptimal !== true && budgetUsed)) {
+        if (usedCrop) {
+          const b = cropRetry?.bounds;
+          const boundsText = b ? ` (view x:${b.x0}..${b.x1 - 1}, y:${b.y0}..${b.y1 - 1})` : "";
+          const exhaustedText =
+            cropRetry?.exhausted === true
+              ? ` Time budget was exhausted again; returned best found.`
+              : ` Cropped retry finished within budget.`;
+          showStatus(
+            `Solved with cropped retry around the horse${boundsText}.${exhaustedText} Solution may be suboptimal for the full map.`,
+            "warning"
+          );
+        } else if (isOptimal === false || (isOptimal !== true && budgetUsed)) {
           showStatus(
             `Time budget exhausted (${Math.round(budgetMs / 1000)}s). Returned best found: score ${solution.score} (area ${solution.area}, ${solution.walls.length} walls). Increase time budget and re-run to improve / prove optimality.`,
             "warning"
