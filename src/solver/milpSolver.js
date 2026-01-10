@@ -48,6 +48,19 @@
     waterMask[horsePos.y * width + horsePos.x] = 0;
     cherryMask[horsePos.y * width + horsePos.x] = 0;
 
+    // Portals: serialize pairs as [ax, ay, bx, by] for the worker.
+    const portalPairsObj = gridData.portalPairs || gridData.debug?.portalPairs || [];
+    const portalPairs = (Array.isArray(portalPairsObj) ? portalPairsObj : [])
+      .map((p) => {
+        const ax = p?.a?.x;
+        const ay = p?.a?.y;
+        const bx = p?.b?.x;
+        const by = p?.b?.y;
+        if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+        return [ax | 0, ay | 0, bx | 0, by | 0];
+      })
+      .filter(Boolean);
+
     const cherryBonus = HP.SCORING?.CHERRY_BONUS ?? 3;
 
     const worker = createMILPWorker();
@@ -135,6 +148,7 @@
           horseY: horsePos.y,
           waterMask,
           cherryMask,
+          portalPairs,
           cherryBonus,
           maxWalls,
           timeBudgetMs,
@@ -151,6 +165,26 @@
     const inBounds = (x, y) => x >= 0 && x < width && y >= 0 && y < height;
     const isPassable = (x, y) => inBounds(x, y) && grid[y][x] !== "water";
     const key = (x, y) => `${x},${y}`;
+
+    // Build portal adjacency map once per flood fill.
+    const portalPairsObj = data.portalPairs || data.debug?.portalPairs || [];
+    const portalMap = new Map();
+    if (Array.isArray(portalPairsObj)) {
+      for (const p of portalPairsObj) {
+        const ax = p?.a?.x;
+        const ay = p?.a?.y;
+        const bx = p?.b?.x;
+        const by = p?.b?.y;
+        if (![ax, ay, bx, by].every(Number.isFinite)) continue;
+        if (!inBounds(ax, ay) || !inBounds(bx, by)) continue;
+        const ak = key(ax, ay);
+        const bk = key(bx, by);
+        if (!portalMap.has(ak)) portalMap.set(ak, []);
+        if (!portalMap.has(bk)) portalMap.set(bk, []);
+        portalMap.get(ak).push({ x: bx, y: by });
+        portalMap.get(bk).push({ x: ax, y: ay });
+      }
+    }
 
     const startKey = key(horsePos.x, horsePos.y);
     if (wallSet.has(startKey)) return { enclosed: new Set(), escapes: true };
@@ -177,6 +211,19 @@
         if (wallSet.has(nk) || enclosed.has(nk)) continue;
         enclosed.add(nk);
         q.push(n);
+      }
+
+      // Portal edges (teleport between same-color portal pairs).
+      const pk = key(x, y);
+      const jumps = portalMap.get(pk);
+      if (jumps && jumps.length) {
+        for (const j of jumps) {
+          if (!isPassable(j.x, j.y)) continue;
+          const jk = key(j.x, j.y);
+          if (wallSet.has(jk) || enclosed.has(jk)) continue;
+          enclosed.add(jk);
+          q.push(j);
+        }
       }
     }
 

@@ -12,7 +12,7 @@ async function getGlp() {
 
 async function solveMILP(payload) {
   const t0 = Date.now();
-  const { width, height, horseX, horseY, waterMask, cherryMask, cherryBonus = 3, maxWalls, timeBudgetMs } = payload;
+  const { width, height, horseX, horseY, waterMask, cherryMask, portalPairs = [], cherryBonus = 3, maxWalls, timeBudgetMs } = payload;
 
   const glp = await getGlp();
 
@@ -44,7 +44,15 @@ async function solveMILP(payload) {
   }
 
   const edges = [];
+  const dir = new Set();
   const und = new Set();
+  const portalNodeIds = new Set();
+  const addDir = (a, b) => {
+    const k = a + "," + b;
+    if (dir.has(k)) return;
+    dir.add(k);
+    edges.push([a, b]);
+  };
   const addUnd = (a, b) => {
     const u = a < b ? a : b;
     const v = a < b ? b : a;
@@ -65,8 +73,30 @@ async function solveMILP(payload) {
       if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
       const nid = idOf[ny * width + nx];
       if (nid < 0) continue;
-      edges.push([id, nid]);
+      addDir(id, nid);
       addUnd(id, nid);
+    }
+  }
+
+  // Add portal edges (teleport between same-color portal pairs).
+  // `portalPairs` is an array of [ax, ay, bx, by] (grid coords).
+  if (Array.isArray(portalPairs)) {
+    for (const p of portalPairs) {
+      if (!Array.isArray(p) || p.length < 4) continue;
+      const ax = p[0] | 0;
+      const ay = p[1] | 0;
+      const bx = p[2] | 0;
+      const by = p[3] | 0;
+      if (ax < 0 || ax >= width || ay < 0 || ay >= height) continue;
+      if (bx < 0 || bx >= width || by < 0 || by >= height) continue;
+      const aId = idOf[ay * width + ax];
+      const bId = idOf[by * width + bx];
+      if (aId < 0 || bId < 0 || aId === bId) continue;
+      portalNodeIds.add(aId);
+      portalNodeIds.add(bId);
+      addDir(aId, bId);
+      addDir(bId, aId);
+      addUnd(aId, bId);
     }
   }
 
@@ -139,6 +169,14 @@ async function solveMILP(payload) {
       ensureConstraint(c, FX(0));
       addCoef(c, "w_" + i, 1);
     }
+  }
+
+  // Portals cannot have walls placed on them (they occupy the tile).
+  for (const i of portalNodeIds) {
+    if (i === horseId) continue;
+    const c = "portal_w_" + i;
+    ensureConstraint(c, FX(0));
+    addCoef(c, "w_" + i, 1);
   }
 
   // Boundary cannot be reachable

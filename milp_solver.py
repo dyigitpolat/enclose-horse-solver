@@ -64,6 +64,35 @@ def solve_milp(
                 in_neigh[v].append(u)
                 und_edges.add((u, v) if u < v else (v, u))
 
+    # Portals: add extra edges between paired portal cells.
+    # `hp_image.parse_image_to_grid` stores portal pairs in pg.debug["portal_pairs"] as:
+    #   [((ax,ay),(bx,by),hue_key), ...]
+    dir_edges = set(edges)
+    portal_pairs = (pg.debug or {}).get("portal_pairs") or []
+    for item in portal_pairs:
+        try:
+            (ax, ay), (bx, by), _h = item
+        except Exception:
+            continue
+        if (ax, ay) not in vid or (bx, by) not in vid:
+            continue
+        u = vid[(ax, ay)]
+        v = vid[(bx, by)]
+        if u == v:
+            continue
+        # directed both ways for flow + reachability
+        if (u, v) not in dir_edges:
+            dir_edges.add((u, v))
+            edges.append((u, v))
+            out_neigh[u].append(v)
+            in_neigh[v].append(u)
+        if (v, u) not in dir_edges:
+            dir_edges.add((v, u))
+            edges.append((v, u))
+            out_neigh[v].append(u)
+            in_neigh[u].append(v)
+        und_edges.add((u, v) if u < v else (v, u))
+
     boundary = set()
     for (x, y), u in vid.items():
         if x == 0 or x == w - 1 or y == 0 or y == h - 1:
@@ -94,6 +123,17 @@ def solve_milp(
     cherry_ids = [vid[(x, y)] for x, y in pg.cherry_cells if (x, y) in vid]
     for c_id in cherry_ids:
         prob += wall[c_id] == 0
+
+    # Portals cannot have walls placed on them (they occupy the tile).
+    portal_ids = []
+    for y in range(h):
+        for x in range(w):
+            if pg.grid[y][x] != "portal":
+                continue
+            if (x, y) in vid:
+                portal_ids.append(vid[(x, y)])
+    for p_id in portal_ids:
+        prob += wall[p_id] == 0
 
     # Reachable implies not a wall
     for i in range(n):

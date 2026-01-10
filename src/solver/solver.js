@@ -33,6 +33,26 @@
         return true;
       };
 
+      // Build portal adjacency map once per flood fill.
+      const portalPairsObj = gridData.portalPairs || gridData.debug?.portalPairs || [];
+      const portalMap = new Map();
+      if (Array.isArray(portalPairsObj)) {
+        for (const p of portalPairsObj) {
+          const ax = p?.a?.x;
+          const ay = p?.a?.y;
+          const bx = p?.b?.x;
+          const by = p?.b?.y;
+          if (![ax, ay, bx, by].every(Number.isFinite)) continue;
+          if (!inBounds(ax, ay) || !inBounds(bx, by)) continue;
+          const ak = key(ax, ay);
+          const bk = key(bx, by);
+          if (!portalMap.has(ak)) portalMap.set(ak, []);
+          if (!portalMap.has(bk)) portalMap.set(bk, []);
+          portalMap.get(ak).push({ x: bx, y: by });
+          portalMap.get(bk).push({ x: ax, y: ay });
+        }
+      }
+
       const startKey = key(horsePos.x, horsePos.y);
       if (!isPassable(horsePos.x, horsePos.y)) return { enclosed: new Set(), escapes: true };
 
@@ -58,6 +78,19 @@
           if (enclosed.has(nk)) continue;
           enclosed.add(nk);
           q.push(n);
+        }
+
+        // Portal edges (teleport between same-color portal pairs).
+        const pk = key(x, y);
+        const jumps = portalMap.get(pk);
+        if (jumps && jumps.length) {
+          for (const j of jumps) {
+            if (!isPassable(j.x, j.y)) continue;
+            const jk = key(j.x, j.y);
+            if (enclosed.has(jk)) continue;
+            enclosed.add(jk);
+            q.push(j);
+          }
         }
       }
 
@@ -99,11 +132,33 @@
       for (let y = y0; y < y1; y++) {
         subGrid.push(grid[y].slice(x0, x1));
       }
+
+      // Crop portal pairs (keep only pairs fully inside the crop window).
+      const portalPairsObj = fullGridData.portalPairs || fullGridData.debug?.portalPairs || [];
+      const portalPairs = (Array.isArray(portalPairsObj) ? portalPairsObj : [])
+        .map((p) => {
+          const ax = p?.a?.x;
+          const ay = p?.a?.y;
+          const bx = p?.b?.x;
+          const by = p?.b?.y;
+          const hueKey = p?.hueKey ?? null;
+          if (![ax, ay, bx, by].every(Number.isFinite)) return null;
+          const inCrop = (x, y) => x >= x0 && x < x1 && y >= y0 && y < y1;
+          if (!inCrop(ax, ay) || !inCrop(bx, by)) return null;
+          return {
+            a: { x: (ax - x0) | 0, y: (ay - y0) | 0 },
+            b: { x: (bx - x0) | 0, y: (by - y0) | 0 },
+            hueKey,
+          };
+        })
+        .filter(Boolean);
+
       return {
         grid: subGrid,
         width: x1 - x0,
         height: y1 - y0,
         horsePos: { x: horsePos.x - x0, y: horsePos.y - y0 },
+        portalPairs,
         debug: { croppedFrom: { x0, y0, x1, y1 } },
       };
     };

@@ -498,6 +498,150 @@ def _is_cherry_pixel(r: int, g: int, b: int) -> bool:
     return True
 
 
+def _quantize_hue_deg(h_deg: float, bin_deg: int = 15) -> int:
+    h = float(h_deg) % 360.0
+    q = round(h / float(bin_deg)) * float(bin_deg)
+    return int(round(q)) % 360
+
+
+def _detect_portal_cells_by_pixels(
+    pixels_rgb: np.ndarray,
+    x0: float,
+    y0: float,
+    cell_w: float,
+    cell_h: float,
+    rows: int,
+    cols: int,
+    grid: List[List[str]],
+) -> Dict[str, object]:
+    """
+    Detect portal sprites by scanning each cell's center region for a dense cluster of
+    vivid + bright pixels. This is designed to be robust even when:
+    - blue portals are misclassified as water
+    - red/orange portals are misclassified as cherries
+
+    Returns:
+      {
+        "portal_cells": [{"x":int,"y":int,"hue_key":int,"hue_deg":float,"count":int}, ...],
+        "portal_pairs": [((ax,ay),(bx,by),hue_key), ...],
+      }
+    """
+    h, w = pixels_rgb.shape[:2]
+    min_cell_px = float(min(cell_w, cell_h))
+    # For smaller cells, use a denser scan so portals still have enough supporting pixels.
+    step = 1 if min_cell_px < 60.0 else 2
+
+    fx0, fx1 = 0.15, 0.85
+    fy0, fy1 = 0.15, 0.85
+
+    portal_cells: List[Dict[str, object]] = []
+
+    eps = 1e-9
+    for gy in range(rows):
+        for gx in range(cols):
+            if grid[gy][gx] == "horse":
+                continue
+
+            left = int(math.floor(x0 + (gx + fx0) * cell_w))
+            right = int(math.ceil(x0 + (gx + fx1) * cell_w))
+            top = int(math.floor(y0 + (gy + fy0) * cell_h))
+            bottom = int(math.ceil(y0 + (gy + fy1) * cell_h))
+            left = max(0, left)
+            right = min(w, right)
+            top = max(0, top)
+            bottom = min(h, bottom)
+            if right <= left or bottom <= top:
+                continue
+
+            region = pixels_rgb[top:bottom:step, left:right:step, :].astype(np.float32) / 255.0
+            if region.size == 0:
+                continue
+
+            rf = region[:, :, 0]
+            gf = region[:, :, 1]
+            bf = region[:, :, 2]
+            mx = np.maximum(np.maximum(rf, gf), bf)
+            mn = np.minimum(np.minimum(rf, gf), bf)
+            chroma = mx - mn
+            v = mx
+            s = np.where(mx > eps, chroma / (mx + eps), 0.0)
+
+            # Thresholds tuned on fixtures (`portal.png`, `portal2.png`):
+            # - require high saturation & value so grass doesn't trigger
+            # - require significant chroma so the white horse doesn't trigger
+            mask = (s > 0.55) & (v > 0.55) & (chroma > 0.25)
+            count = int(mask.sum())
+
+            sample_total = int(region.shape[0] * region.shape[1])
+            # Portals occupy a large fraction of the center region; background terrain should not.
+            # Use a conservative absolute floor to avoid false positives in water/terrain artifacts.
+            # Note: 180 floor allows smaller portals like (1,5) in portal_cherries.png (count~198) to be detected.
+            min_count = max(180, int(sample_total * 0.12))
+            if count < min_count:
+                continue
+
+            # Hue computation (degrees)
+            h6 = np.zeros_like(mx, dtype=np.float32)
+            valid = chroma > eps
+            mask_r = valid & (mx == rf)
+            mask_g = valid & (mx == gf)
+            mask_b = valid & (mx == bf)
+            h6[mask_r] = np.mod((gf[mask_r] - bf[mask_r]) / (chroma[mask_r] + eps), 6.0)
+            h6[mask_g] = (bf[mask_g] - rf[mask_g]) / (chroma[mask_g] + eps) + 2.0
+            h6[mask_b] = (rf[mask_b] - gf[mask_b]) / (chroma[mask_b] + eps) + 4.0
+            hue_deg = (h6 * 60.0) % 360.0
+
+            hh = hue_deg[mask]
+            ww = s[mask]
+            if hh.size == 0:
+                continue
+
+            ang = hh * (math.pi / 180.0)
+            sum_cos = float(np.cos(ang).dot(ww))
+            sum_sin = float(np.sin(ang).dot(ww))
+            mean_ang = math.atan2(sum_sin, sum_cos)
+            mean_h_deg = (mean_ang * 180.0 / math.pi) % 360.0
+
+            # Cherries are vivid red, but are much smaller than portals. In some layouts (e.g. portal_cherries.png),
+            # the cherry sprite can look "portal-like" by our generic vivid-pixel test. Disambiguate by requiring
+            # near-pure-red candidates to also have a high fill ratio in the cell center region.
+            fill_ratio = float(count) / float(sample_total) if sample_total > 0 else 0.0
+            red_dist = min(float(mean_h_deg), 360.0 - float(mean_h_deg))
+            if red_dist <= 8.0 and fill_ratio < 0.28:
+                continue
+
+            hue_key = _quantize_hue_deg(mean_h_deg, 15)
+
+            portal_cells.append(
+                {"x": int(gx), "y": int(gy), "hue_key": int(hue_key), "hue_deg": float(mean_h_deg), "count": int(count)}
+            )
+
+    # Pair portals by quantized hue (greedy by Manhattan distance).
+    by_hue: Dict[int, List[Tuple[int, int]]] = {}
+    for c in portal_cells:
+        k = int(c["hue_key"])
+        by_hue.setdefault(k, []).append((int(c["x"]), int(c["y"])))
+
+    portal_pairs: List[Tuple[Tuple[int, int], Tuple[int, int], int]] = []
+    for hue_key, cells in by_hue.items():
+        if len(cells) < 2:
+            continue
+        remaining = list(cells)
+        while len(remaining) >= 2:
+            a = remaining.pop(0)
+            best_i = 0
+            best_d = 10**9
+            for i, b in enumerate(remaining):
+                d = abs(a[0] - b[0]) + abs(a[1] - b[1])
+                if d < best_d:
+                    best_d = d
+                    best_i = i
+            b = remaining.pop(best_i)
+            portal_pairs.append((a, b, int(hue_key)))
+
+    return {"portal_cells": portal_cells, "portal_pairs": portal_pairs}
+
+
 def _detect_cherry_cells_by_pixels(
     pixels_rgb: np.ndarray,
     x0: float,
@@ -893,6 +1037,24 @@ def parse_image_to_grid(
         grass_count = max(0, grass_count - 1)
     grid[hy][hx] = "horse"
 
+    # Detect portals BEFORE cherries and override misclassifications.
+    portal_info = _detect_portal_cells_by_pixels(pixels_original, x0, y0, cell_w, cell_h, rows, cols, grid)
+    portal_cells = portal_info.get("portal_cells", []) or []
+    portal_pairs = portal_info.get("portal_pairs", []) or []
+    portal_count = 0
+    for c in portal_cells:
+        px = int(c["x"])
+        py = int(c["y"])
+        if (px, py) == (hx, hy):
+            continue
+        prev = grid[py][px]
+        if prev == "water":
+            water_count = max(0, water_count - 1)
+        if prev == "grass":
+            grass_count = max(0, grass_count - 1)
+        grid[py][px] = "portal"
+        portal_count += 1
+
     # Cherries: pixel-scan detection (priority: reliability) + per-cell candidates.
     cherry_by_pixels = _detect_cherry_cells_by_pixels(pixels_original, x0, y0, cell_w, cell_h, rows, cols, grid)
     cherry_cells: List[Tuple[int, int]] = []
@@ -921,6 +1083,9 @@ def parse_image_to_grid(
         "horse_method": horse_method,
         "horse_brightness": horse_stats.get("brightness"),
         "horse_whiteness": horse_stats.get("whiteness"),
+        "portal_count": portal_count,
+        "portal_cells": portal_cells,
+        "portal_pairs": portal_pairs,
         "color_clusters": cluster_info,
         "blur_radius": blur_radius,
     }

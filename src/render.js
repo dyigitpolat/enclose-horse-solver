@@ -19,7 +19,7 @@
     if (wallsUsedEl) wallsUsedEl.textContent = "0";
     if (wallsLeftEl) wallsLeftEl.textContent = String(Number.isFinite(maxWalls) ? maxWalls : 0);
     if (efficiencyEl) efficiencyEl.textContent = "0";
-    if (wallListEl) wallListEl.innerHTML = "<em>Not optimized yet — click “Analyze &amp; Optimize”.</em>";
+    if (wallListEl) wallListEl.innerHTML = '<em>Not optimized yet — click "Analyze &amp; Optimize".</em>';
 
     // Draw base grid (no walls/enclosure)
     const canvas = gridCanvas;
@@ -47,6 +47,17 @@
       horseBorder: "#5dff88",
     };
 
+    // Build portal cell -> hue color map from portal pairs
+    const portalColorMap = new Map();
+    const portalPairs = gridData.debug?.portalPairs || gridData.portalPairs || [];
+    for (const pair of portalPairs) {
+      const hue = pair.h ?? pair.hueKey ?? 270; // fallback to purple
+      const colorRgb = hslToRgb(hue, 0.85, 0.65);
+      const color = `rgb(${colorRgb[0]},${colorRgb[1]},${colorRgb[2]})`;
+      portalColorMap.set(`${pair.a.x},${pair.a.y}`, color);
+      portalColorMap.set(`${pair.b.x},${pair.b.y}`, color);
+    }
+
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const cellType = grid[y][x];
@@ -72,6 +83,38 @@
           ctx.fill();
           ctx.fillStyle = colors.cherryLeaf;
           ctx.fillRect(cx - 1, cy - r - 3, 2, 4);
+        }
+
+        // Draw portal marker (swirling oval gateway) - color-coded by pair
+        if (cellType === "portal") {
+          const portalKey = `${x},${y}`;
+          const portalColor = portalColorMap.get(portalKey) || "rgb(148,0,211)"; // fallback purple
+          
+          const cx = x * cellSize + cellSize * 0.5;
+          const cy = y * cellSize + cellSize * 0.5;
+          const r = Math.max(3, cellSize * 0.25);
+          
+          // Parse RGB for lighter/darker variants
+          const match = portalColor.match(/rgb\((\d+),(\d+),(\d+)\)/);
+          const [_, rVal, gVal, bVal] = match ? match.map(Number) : [0, 148, 0, 211];
+          
+          // Outer glow (lighter, more transparent)
+          ctx.fillStyle = `rgba(${Math.min(255, rVal + 40)},${Math.min(255, gVal + 40)},${Math.min(255, bVal + 40)},0.4)`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 1.1, r * 0.7, 0, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Portal oval (main color)
+          ctx.fillStyle = `rgba(${rVal},${gVal},${bVal},0.85)`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 0.9, r * 0.55, 0, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Inner swirl/highlight (lighter)
+          ctx.fillStyle = `rgba(${Math.min(255, rVal + 70)},${Math.min(255, gVal + 70)},${Math.min(255, bVal + 70)},0.9)`;
+          ctx.beginPath();
+          ctx.ellipse(cx - r * 0.2, cy - r * 0.1, r * 0.4, r * 0.25, Math.PI * 0.3, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
     }
@@ -162,6 +205,17 @@
     horseBorder: "#5dff88",
   };
 
+  // Build portal cell -> hue color map from portal pairs
+  const portalColorMap = new Map();
+  const portalPairs = gridData.debug?.portalPairs || gridData.portalPairs || [];
+  for (const pair of portalPairs) {
+    const hue = pair.h ?? pair.hueKey ?? 270; // fallback to purple
+    const colorRgb = hslToRgb(hue, 0.85, 0.65);
+    const color = `rgb(${colorRgb[0]},${colorRgb[1]},${colorRgb[2]})`;
+    portalColorMap.set(`${pair.a.x},${pair.a.y}`, color);
+    portalColorMap.set(`${pair.b.x},${pair.b.y}`, color);
+  }
+
   for (let y = yStart; y < yEnd; y++) {
     for (let x = xStart; x < xEnd; x++) {
       const cellType = grid[y][x];
@@ -198,6 +252,38 @@
         ctx.fill();
         ctx.fillStyle = colors.cherryLeaf;
         ctx.fillRect(cx - 1, cy - r - 3, 2, 4);
+      }
+
+      // Draw portal marker (even if enclosed, never on walls) - color-coded by pair
+      if (!isWall && cellType === "portal") {
+        const portalKey = `${x},${y}`;
+        const portalColor = portalColorMap.get(portalKey) || "rgb(148,0,211)"; // fallback purple
+        
+        const cx = dx * cellSize + cellSize * 0.5;
+        const cy = dy * cellSize + cellSize * 0.5;
+        const r = Math.max(3, cellSize * 0.25);
+        
+        // Parse RGB for lighter/darker variants
+        const match = portalColor.match(/rgb\((\d+),(\d+),(\d+)\)/);
+        const [_, rVal, gVal, bVal] = match ? match.map(Number) : [0, 148, 0, 211];
+        
+        // Outer glow (lighter, more transparent)
+        ctx.fillStyle = `rgba(${Math.min(255, rVal + 40)},${Math.min(255, gVal + 40)},${Math.min(255, bVal + 40)},0.4)`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r * 1.1, r * 0.7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Portal oval (main color)
+        ctx.fillStyle = `rgba(${rVal},${gVal},${bVal},0.85)`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r * 0.9, r * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Inner swirl/highlight (lighter)
+        ctx.fillStyle = `rgba(${Math.min(255, rVal + 70)},${Math.min(255, gVal + 70)},${Math.min(255, bVal + 70)},0.9)`;
+        ctx.beginPath();
+        ctx.ellipse(cx - r * 0.2, cy - r * 0.1, r * 0.4, r * 0.25, Math.PI * 0.3, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       if (isEnclosed && !isWall) {
@@ -309,6 +395,37 @@
 
   return visited.size;
 };
+
+  // Helper: Convert HSL to RGB (for portal color-coding)
+  // h: hue in degrees [0, 360), s: saturation [0, 1], l: lightness [0, 1]
+  // Returns [r, g, b] with values [0, 255]
+  function hslToRgb(h, s, l) {
+    h = ((h % 360) + 360) % 360;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    
+    let r1, g1, b1;
+    if (h < 60) {
+      r1 = c; g1 = x; b1 = 0;
+    } else if (h < 120) {
+      r1 = x; g1 = c; b1 = 0;
+    } else if (h < 180) {
+      r1 = 0; g1 = c; b1 = x;
+    } else if (h < 240) {
+      r1 = 0; g1 = x; b1 = c;
+    } else if (h < 300) {
+      r1 = x; g1 = 0; b1 = c;
+    } else {
+      r1 = c; g1 = 0; b1 = x;
+    }
+    
+    return [
+      Math.round((r1 + m) * 255),
+      Math.round((g1 + m) * 255),
+      Math.round((b1 + m) * 255)
+    ];
+  }
 })();
 
 

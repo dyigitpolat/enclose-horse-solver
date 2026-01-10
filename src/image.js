@@ -858,6 +858,23 @@
       grid[horsePos.y][horsePos.x] = "horse";
     }
 
+    // Detect portals BEFORE cherries and override misclassifications.
+    // Blue portals can be mistaken for water; red/orange portals can be mistaken for cherries.
+    const portalInfo = detectPortalCellsByPixels(pixelsOriginal, width, height, { x0, y0, cellW, cellH }, rows, cols, grid);
+    const portalCells = portalInfo.portalCells || [];
+    const portalPairs = portalInfo.portalPairs || [];
+    let portalCount = 0;
+    if (portalCells.length) {
+      for (const p of portalCells) {
+        const prev = grid[p.y]?.[p.x];
+        if (prev === "water") waterCount = Math.max(0, waterCount - 1);
+        if (prev === "grass") grassCount = Math.max(0, grassCount - 1);
+        if (prev === "horse") continue;
+        grid[p.y][p.x] = "portal";
+        portalCount++;
+      }
+    }
+
     // Detect cherries (priority: reliability). Cherries are passable tiles (like grass).
     const cherryByPixels = detectCherryCellsByPixels(pixelsOriginal, width, height, { x0, y0, cellW, cellH }, rows, cols, grid);
     const cherryCells = [];
@@ -882,12 +899,15 @@
       horseWhiteness: horseStats?.whiteness ?? null,
       cherryCount,
       cherryCells,
+      portalCount,
+      portalCells,
+      portalPairs,
       colorClusters,
       blurRadius,
       gridGeom: { x0, y0, cellW, cellH, axisX: geom.axisX, axisY: geom.axisY },
     };
 
-    return { grid, width: cols, height: rows, horsePos, debug };
+    return { grid, width: cols, height: rows, horsePos, portalPairs, debug };
   };
 
   HP.parseImageToGrid = function parseImageToGrid(img, detectionCanvas, cols, rows, blurRadius = 0.0) {
@@ -978,6 +998,154 @@
     if ((r - g) < 50 || (r - b) < 50) return false;
     if (r < 1.7 * (g + 1) || r < 1.7 * (b + 1)) return false;
     return true;
+  }
+
+  function rgbToHueSatVal(r, g, b) {
+    // r,g,b: 0..255
+    const rf = r / 255;
+    const gf = g / 255;
+    const bf = b / 255;
+    const max = Math.max(rf, gf, bf);
+    const min = Math.min(rf, gf, bf);
+    const chroma = max - min;
+    const v = max;
+    const s = max > 1e-9 ? chroma / max : 0;
+
+    let hDeg = 0;
+    if (chroma > 1e-9) {
+      let h;
+      if (max === rf) {
+        h = ((gf - bf) / chroma) % 6;
+      } else if (max === gf) {
+        h = (bf - rf) / chroma + 2;
+      } else {
+        h = (rf - gf) / chroma + 4;
+      }
+      hDeg = (h * 60 + 360) % 360;
+    }
+
+    return { hDeg, s, v, chroma };
+  }
+
+  function quantizeHueDeg(hDeg, binDeg = 15) {
+    const h = ((hDeg % 360) + 360) % 360;
+    const q = Math.round(h / binDeg) * binDeg;
+    return ((q % 360) + 360) % 360;
+  }
+
+  function detectPortalCellsByPixels(pixels, width, height, geom, rows, cols, grid) {
+    // Detect portal sprites by looking for dense clusters of vivid + bright pixels
+    // inside each cell's center region.
+    //
+    // Returns:
+    //  - portalMask: Uint8Array(rows*cols) with 1 for portal cells
+    //  - portalCells: [{x,y,hueKey,hueDeg,count}]
+    //  - portalPairs: [{a:{x,y}, b:{x,y}, hueKey}]
+    const portalMask = new Uint8Array(rows * cols);
+    const portalCells = [];
+
+    const minCellPx = Math.min(geom.cellW, geom.cellH);
+    // For smaller cells, use a denser scan so portals still have enough supporting pixels.
+    const step = minCellPx < 60 ? 1 : 2;
+
+    // Scan a central region to avoid grid lines / neighbor bleeding.
+    const fx0 = 0.15,
+      fx1 = 0.85,
+      fy0 = 0.15,
+      fy1 = 0.85;
+
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid?.[y]?.[x] === "horse") continue;
+
+        const left = Math.max(0, Math.floor(geom.x0 + (x + fx0) * geom.cellW));
+        const right = Math.min(width, Math.ceil(geom.x0 + (x + fx1) * geom.cellW));
+        const top = Math.max(0, Math.floor(geom.y0 + (y + fy0) * geom.cellH));
+        const bottom = Math.min(height, Math.ceil(geom.y0 + (y + fy1) * geom.cellH));
+        if (right <= left || bottom <= top) continue;
+
+        const sampleTotal =
+          Math.max(1, Math.floor((right - left) / step)) * Math.max(1, Math.floor((bottom - top) / step));
+        // Portals fill a large fraction of the center region; background grass should not.
+        // Use a conservative absolute floor to avoid false positives in water/terrain artifacts.
+        // Note: 180 floor allows smaller portals like (1,5) in portal_cherries.png (count~198) to be detected.
+        const minCount = Math.max(180, Math.floor(sampleTotal * 0.12));
+
+        let count = 0;
+        let sumCos = 0;
+        let sumSin = 0;
+
+        for (let py = top; py < bottom; py += step) {
+          for (let px = left; px < right; px += step) {
+            const idx = (py * width + px) * 4;
+            const r = pixels[idx];
+            const g = pixels[idx + 1];
+            const b = pixels[idx + 2];
+            const { hDeg, s, v, chroma } = rgbToHueSatVal(r, g, b);
+
+            // Thresholds tuned on fixtures (`portal.png`, `portal2.png`):
+            // - require high saturation & value so grass doesn't trigger
+            // - require significant chroma so the white horse doesn't trigger
+            if (s <= 0.55 || v <= 0.55 || chroma <= 0.25) continue;
+
+            const w = s; // weight hue by saturation
+            const ang = (hDeg * Math.PI) / 180;
+            sumCos += Math.cos(ang) * w;
+            sumSin += Math.sin(ang) * w;
+            count++;
+          }
+        }
+
+        if (count < minCount) continue;
+
+        // Cherries are vivid red, but are much smaller than portals. In some layouts (e.g. portal_cherries.png),
+        // the cherry sprite can look "portal-like" by our generic vivid-pixel test. Disambiguate by requiring
+        // near-pure-red candidates to also have a high fill ratio in the cell center region.
+        //
+        // This keeps true red/orange portals (large oval sprites) while letting cherry detection handle cherries.
+        const fillRatio = count / sampleTotal;
+
+        const hueDeg = ((Math.atan2(sumSin, sumCos) * 180) / Math.PI + 360) % 360;
+        const redDist = Math.min(hueDeg, 360 - hueDeg);
+        if (redDist <= 8 && fillRatio < 0.28) continue;
+        const hueKey = quantizeHueDeg(hueDeg, 15);
+
+        portalMask[y * cols + x] = 1;
+        portalCells.push({ x, y, hueKey, hueDeg, count });
+      }
+    }
+
+    // Pair portals by quantized hue.
+    const byHue = new Map();
+    for (const c of portalCells) {
+      const key = c.hueKey;
+      if (!byHue.has(key)) byHue.set(key, []);
+      byHue.get(key).push({ x: c.x, y: c.y });
+    }
+
+    const portalPairs = [];
+    for (const [hueKey, cells] of byHue.entries()) {
+      if (cells.length < 2) continue;
+      const remaining = cells.slice();
+      // Greedy pairing by Manhattan distance (works well when portals are in pairs).
+      while (remaining.length >= 2) {
+        const a = remaining.shift();
+        let bestIdx = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+          const b = remaining[i];
+          const d = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+          if (d < bestD) {
+            bestD = d;
+            bestIdx = i;
+          }
+        }
+        const b = remaining.splice(bestIdx, 1)[0];
+        portalPairs.push({ a, b, hueKey });
+      }
+    }
+
+    return { portalMask, portalCells, portalPairs };
   }
 
   function detectCherryCellsByPixels(pixels, width, height, geom, rows, cols, grid) {
